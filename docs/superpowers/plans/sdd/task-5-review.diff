@@ -1,0 +1,31 @@
+# Review package: Task 5
+
+## Modified: backend/main.py
+
+--- .sdd-baseline/task-5/main.py	2026-06-22 10:39:49.131529200 +0800
++++ backend/main.py	2026-06-22 10:40:28.660953400 +0800
+@@ -14,11 +14,13 @@
+ from core.config import get_settings
+ from core.logger import get_logger
+ from graph import build_graph
++from multiagent import build_multi_agent_graph
+ from rag.neo4j_store import Neo4jStore
+ from rag.qdrant_store import QdrantStore
+ from rag.rag_service import RagService
+ from services.embedding_service import EmbeddingService
+ from services.llm_service import LLMService
++from services.web_search_service import WebSearchService
+ 
+ settings = get_settings()
+ logger = get_logger(__name__)
+@@ -52,6 +54,10 @@
+     app.state.rag = rag
+     app.state.graph = build_graph(llm, rag, settings)
+ 
++    web = WebSearchService(settings)
++    app.state.web = web
++    app.state.multi_agent_graph = build_multi_agent_graph(llm, rag, web, settings)
++
+     logger.info("Application ready: http://%s:%d", settings.app_host, settings.app_port)
+     yield
+ 

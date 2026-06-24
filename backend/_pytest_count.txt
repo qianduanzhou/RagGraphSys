@@ -1,0 +1,5 @@
+tests/test_web_search_service.py::test_unavailable_when_no_key_and_no_client
+tests/test_web_search_service.py::test_available_when_client_injected
+tests/test_web_search_service.py::test_search_respects_max_results_override
+
+173 tests collected in 7.20s

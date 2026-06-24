@@ -1,0 +1,240 @@
+data: {"type": "node", "node": "router_node", "update": {"needs_rag": true, "used_rag": true}}
+
+data: {"type": "node", "node": "qdrant_node", "update": {"hits": 2}}
+
+data: {"type": "node", "node": "neo4j_node", "update": {"hits": 0}}
+
+data: {"type": "node", "node": "merge_node", "update": {"sources": [{"type": "qdrant", "content": "# Messages 消息结构\n\n> 所属：AI / 基础概念\n\n## 核心要点\n\n- `messages` 通常是一个列表，列表里的每一项是一条消息字典\n- 常见字段包括 `role` 和 `content`\n- `role` 表示消息来源或身份，例如 `system`、`user`、`assistant`\n- `content` 表示这条消息的文本内容\n\n## 详细说明\n\n在对话式 AI 调用中，模型通常根据 `messages` 的顺序理解上下文。把 `style_context` 作为一条新的 `user` 消息追加到末尾，表示在已有对话之后再补充一段用户侧的风格要求或上下文。\n\n这种结构本质上是“按顺序排列的消息列表”。越靠后的消息越接近当前请求，通常会对最终回答有更直接的影响。\n\n## 示例\n\n```python\nrequest.messages = [\n    {\"role\": \"system\", \"content\": \"你是一个助手\"},\n    {\"role\": \"user\", \"content\": \"帮我写一段介绍\"}\n]", "score": 0.5562564, "source": "Messages消息结构.md"}, {"type": "qdrant", "content": "style_context = \"请使用正式、简洁的风格\"\n\nmessages = [\n    *request.messages,\n    {\"role\": \"user\", \"content\": style_context}\n]\n\n# 最终结构：\n[\n    {\"role\": \"system\", \"content\": \"你是一个助手\"},\n    {\"role\": \"user\", \"content\": \"帮我写一段介绍\"},\n    {\"role\": \"user\", \"content\": \"请使用正式、简洁的风格\"}\n]\n```", "score": 0.5313128, "source": "Messages消息结构.md"}], "used_rag": true}}
+
+data: {"type": "delta", "text": "根据"}
+
+data: {"type": "delta", "text": "参考资料"}
+
+data: {"type": "delta", "text": "，"}
+
+data: {"type": "delta", "text": "消息"}
+
+data: {"type": "delta", "text": "结构"}
+
+data: {"type": "delta", "text": "的核心"}
+
+data: {"type": "delta", "text": "要点"}
+
+data: {"type": "delta", "text": "如下"}
+
+data: {"type": "delta", "text": "：\n\n"}
+
+data: {"type": "delta", "text": "1"}
+
+data: {"type": "delta", "text": "."}
+
+data: {"type": "delta", "text": " **"}
+
+data: {"type": "delta", "text": "基本"}
+
+data: {"type": "delta", "text": "形式"}
+
+data: {"type": "delta", "text": "**"}
+
+data: {"type": "delta", "text": "："}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "messages"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": " 通常"}
+
+data: {"type": "delta", "text": "是一个"}
+
+data: {"type": "delta", "text": "按"}
+
+data: {"type": "delta", "text": "顺序"}
+
+data: {"type": "delta", "text": "排列"}
+
+data: {"type": "delta", "text": "的"}
+
+data: {"type": "delta", "text": "列表"}
+
+data: {"type": "delta", "text": "，"}
+
+data: {"type": "delta", "text": "列表"}
+
+data: {"type": "delta", "text": "里的"}
+
+data: {"type": "delta", "text": "每一"}
+
+data: {"type": "delta", "text": "项"}
+
+data: {"type": "delta", "text": "是一条"}
+
+data: {"type": "delta", "text": "消息"}
+
+data: {"type": "delta", "text": "字典"}
+
+data: {"type": "delta", "text": "。\n"}
+
+data: {"type": "delta", "text": "2"}
+
+data: {"type": "delta", "text": "."}
+
+data: {"type": "delta", "text": " **"}
+
+data: {"type": "delta", "text": "核心"}
+
+data: {"type": "delta", "text": "字段"}
+
+data: {"type": "delta", "text": "**"}
+
+data: {"type": "delta", "text": "：\n"}
+
+data: {"type": "delta", "text": "  "}
+
+data: {"type": "delta", "text": " -"}
+
+data: {"type": "delta", "text": " `"}
+
+data: {"type": "delta", "text": "role"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "："}
+
+data: {"type": "delta", "text": "表示"}
+
+data: {"type": "delta", "text": "消息"}
+
+data: {"type": "delta", "text": "来源"}
+
+data: {"type": "delta", "text": "或"}
+
+data: {"type": "delta", "text": "身份"}
+
+data: {"type": "delta", "text": "（"}
+
+data: {"type": "delta", "text": "例如"}
+
+data: {"type": "delta", "text": " `"}
+
+data: {"type": "delta", "text": "system"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "、"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "user"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "、"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "assistant"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "）"}
+
+data: {"type": "delta", "text": "。\n"}
+
+data: {"type": "delta", "text": "  "}
+
+data: {"type": "delta", "text": " -"}
+
+data: {"type": "delta", "text": " `"}
+
+data: {"type": "delta", "text": "content"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": "："}
+
+data: {"type": "delta", "text": "表示"}
+
+data: {"type": "delta", "text": "这条"}
+
+data: {"type": "delta", "text": "消息"}
+
+data: {"type": "delta", "text": "的"}
+
+data: {"type": "delta", "text": "文本"}
+
+data: {"type": "delta", "text": "内容"}
+
+data: {"type": "delta", "text": "。\n"}
+
+data: {"type": "delta", "text": "3"}
+
+data: {"type": "delta", "text": "."}
+
+data: {"type": "delta", "text": " **"}
+
+data: {"type": "delta", "text": "顺序"}
+
+data: {"type": "delta", "text": "影响"}
+
+data: {"type": "delta", "text": "**"}
+
+data: {"type": "delta", "text": "："}
+
+data: {"type": "delta", "text": "模型"}
+
+data: {"type": "delta", "text": "会"}
+
+data: {"type": "delta", "text": "根据"}
+
+data: {"type": "delta", "text": " `"}
+
+data: {"type": "delta", "text": "messages"}
+
+data: {"type": "delta", "text": "`"}
+
+data: {"type": "delta", "text": " 的"}
+
+data: {"type": "delta", "text": "顺序"}
+
+data: {"type": "delta", "text": "理解"}
+
+data: {"type": "delta", "text": "上下"}
+
+data: {"type": "delta", "text": "文"}
+
+data: {"type": "delta", "text": "，"}
+
+data: {"type": "delta", "text": "越"}
+
+data: {"type": "delta", "text": "靠"}
+
+data: {"type": "delta", "text": "后的"}
+
+data: {"type": "delta", "text": "消息"}
+
+data: {"type": "delta", "text": "越"}
+
+data: {"type": "delta", "text": "接近"}
+
+data: {"type": "delta", "text": "当前"}
+
+data: {"type": "delta", "text": "请求"}
+
+data: {"type": "delta", "text": "，"}
+
+data: {"type": "delta", "text": "对"}
+
+data: {"type": "delta", "text": "最终"}
+
+data: {"type": "delta", "text": "回答"}
+
+data: {"type": "delta", "text": "的影响"}
+
+data: {"type": "delta", "text": "通常越直接。"}
+
+data: {"type": "node", "node": "llm_node", "update": {"iterations": 1}}
+
+data: {"type": "done"}
+

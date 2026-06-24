@@ -1,0 +1,186 @@
+# Review package: Task 8
+
+## Modified: frontend/src/App.tsx
+
+--- .sdd-baseline/task-8/App.tsx	2026-06-22 11:25:37.164714200 +0800
++++ frontend/src/App.tsx	2026-06-22 11:27:09.259199700 +0800
+@@ -4,10 +4,12 @@
+ import ChatWindow from "./components/ChatWindow";
+ import { chatStream, deleteDoc, fetchDocs, fetchHealth, ingestFiles } from "./api/client";
+ import {
++  MULTI_AGENT_PIPELINE,
+   PIPELINE,
+   type BatchIngestResponse,
+   type ChatMessage,
+   type ChatHistoryItem,
++  type ChatMode,
+   type HealthResponse,
+   type UploadedDoc,
+ } from "./types";
+@@ -30,15 +32,28 @@
+   const [streaming, setStreaming] = useState(false);
+   const [health, setHealth] = useState<HealthResponse | null>(null);
+   const [docs, setDocs] = useState<UploadedDoc[]>([]);
++  // 问答模式与联网搜索可用性（来自后端 health.web_search）。
++  const [mode, setMode] = useState<ChatMode>("rag");
++  const [webSearchAvailable, setWebSearchAvailable] = useState<boolean>(true);
+ 
+   useEffect(() => {
+-    fetchHealth().then(setHealth).catch(() => setHealth(null));
++    fetchHealth()
++      .then((h) => {
++        setHealth(h);
++        setWebSearchAvailable(h.web_search);
++      })
++      .catch(() => setHealth(null));
+     // 拉取已入库文档列表（持久化在后端，刷新后仍可见）。
+     fetchDocs().then(setDocs).catch(() => setDocs([]));
+   }, []);
+ 
+   const refreshHealth = useCallback(() => {
+-    fetchHealth().then(setHealth).catch(() => setHealth(null));
++    fetchHealth()
++      .then((h) => {
++        setHealth(h);
++        setWebSearchAvailable(h.web_search);
++      })
++      .catch(() => setHealth(null));
+   }, []);
+ 
+   const refreshDocs = useCallback(() => {
+@@ -47,6 +62,8 @@
+ 
+   const handleSend = useCallback(
+     async (text: string) => {
++      // 按当前模式选择展示用管线（RAG vs 多智能体）。
++      const pipeline = mode === "multi" ? MULTI_AGENT_PIPELINE : PIPELINE;
+       const userMsg: ChatMessage = { id: uid(), role: "user", content: text };
+       const assistantId = uid();
+       const assistantMsg: ChatMessage = {
+@@ -56,7 +73,8 @@
+         sources: [],
+         usedRag: false,
+         streaming: true,
+-        steps: PIPELINE.map((p) => ({ ...p, status: "pending" as const })),
++        mode,
++        steps: pipeline.map((p) => ({ ...p, status: "pending" as const })),
+       };
+       const history: ChatHistoryItem[] = [...messages, userMsg]
+         .filter((m) => m.id !== "welcome")
+@@ -75,6 +93,23 @@
+         await chatStream(text, history, {
+           onNode: (node, update) =>
+             patch((m) => {
++              // 多智能体：把两个 agent 的原始回答 + 来源写入消息（供折叠面板/徽章）。
++              if (node === "rag_agent_node") {
++                const next: ChatMessage = { ...m, ragAgentAnswer: update.answer };
++                if (update.sources) next.sources = update.sources;
++                if (typeof update.used_rag === "boolean")
++                  next.usedRag = update.used_rag;
++                return next;
++              }
++              if (node === "web_agent_node") {
++                const next: ChatMessage = { ...m, webAgentAnswer: update.answer };
++                // 合并联网来源到既有 sources（避免覆盖 RAG 来源）。
++                next.sources = [...(m.sources ?? []), ...(update.sources ?? [])];
++                if (typeof update.used_web === "boolean")
++                  next.usedWeb = update.used_web;
++                return next;
++              }
++              // 通用步进器更新（RAG 与多智能体共用，保持既有逻辑不变）。
+               const steps = (m.steps ?? []).map((s) => ({ ...s }));
+               const idx = steps.findIndex((s) => s.key === node);
+               if (idx >= 0) {
+@@ -101,13 +136,13 @@
+               error: true,
+               content: m.content || `请求失败：${msg}`,
+             })),
+-        });
++        }, mode);
+       } finally {
+         setStreaming(false);
+         refreshHealth();
+       }
+     },
+-    [messages, refreshHealth]
++    [messages, refreshHealth, mode]
+   );
+ 
+   const handleUploadFiles = useCallback(
+@@ -166,6 +201,9 @@
+           messages={messages}
+           streaming={streaming}
+           onSend={handleSend}
++          mode={mode}
++          onModeChange={setMode}
++          webSearchAvailable={webSearchAvailable}
+         />
+       </main>
+     </div>
+
+## Modified: frontend/src/components/ChatWindow.tsx
+
+--- .sdd-baseline/task-8/ChatWindow.tsx	2026-06-22 11:25:37.205774100 +0800
++++ frontend/src/components/ChatWindow.tsx	2026-06-22 11:27:27.471442000 +0800
+@@ -1,6 +1,6 @@
+ import { useEffect, useRef, useState } from "react";
+ import { SendHorizontal } from "lucide-react";
+-import type { ChatMessage } from "../types";
++import type { ChatMessage, ChatMode } from "../types";
+ import MessageBubble from "./MessageBubble";
+ import "./ChatWindow.css";
+ 
+@@ -8,9 +8,19 @@
+   messages: ChatMessage[];
+   streaming: boolean;
+   onSend: (text: string) => void;
++  mode: ChatMode;
++  onModeChange: (m: ChatMode) => void;
++  webSearchAvailable: boolean;
+ }
+ 
+-export default function ChatWindow({ messages, streaming, onSend }: Props) {
++export default function ChatWindow({
++  messages,
++  streaming,
++  onSend,
++  mode,
++  onModeChange,
++  webSearchAvailable,
++}: Props) {
+   const [draft, setDraft] = useState("");
+   const scrollRef = useRef<HTMLDivElement>(null);
+   const taRef = useRef<HTMLTextAreaElement>(null);
+@@ -53,6 +63,32 @@
+       </div>
+ 
+       <div className="composer">
++        <div className="mode-switch" role="tablist" aria-label="问答模式">
++          <button
++            type="button"
++            role="tab"
++            aria-selected={mode === "rag"}
++            className={mode === "rag" ? "active" : ""}
++            onClick={() => onModeChange("rag")}
++          >
++            RAG问答
++          </button>
++          <button
++            type="button"
++            role="tab"
++            aria-selected={mode === "multi"}
++            className={mode === "multi" ? "active" : ""}
++            disabled={!webSearchAvailable}
++            title={
++              webSearchAvailable
++                ? "多智能体：RAG + 联网 + 整合"
++                : "未配置 TAVILY_API_KEY"
++            }
++            onClick={() => onModeChange("multi")}
++          >
++            多智能体
++          </button>
++        </div>
+         <div className="composer-box">
+           <textarea
+             ref={taRef}

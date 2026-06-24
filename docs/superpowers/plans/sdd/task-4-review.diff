@@ -1,0 +1,15 @@
+# Review package: Task 4
+
+## New files (read in full):
+- backend/multiagent/graph.py
+- backend/tests/test_multiagent_graph.py
+
+## Modified: backend/multiagent/__init__.py
+
+--- .sdd-baseline/task-4/__init__.py	2026-06-22 10:27:05.567480600 +0800
++++ backend/multiagent/__init__.py	2026-06-22 10:28:18.681194300 +0800
+@@ -1 +1,4 @@
+ """多智能体问答：RAG + 联网 + 整合。"""
++from multiagent.graph import build_multi_agent_graph
++
++__all__ = ["build_multi_agent_graph"]

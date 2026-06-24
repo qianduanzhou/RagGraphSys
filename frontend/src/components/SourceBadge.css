@@ -1,0 +1,85 @@
+.src {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--bg-deep);
+  animation: popIn 0.25s ease both;
+}
+.src.qdrant {
+  border-color: rgba(255, 180, 84, 0.32);
+}
+.src.neo4j {
+  border-color: rgba(61, 214, 140, 0.32);
+}
+
+.src-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 7px 11px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  transition: background 0.15s ease;
+}
+.src-head:hover {
+  background: var(--panel-2);
+}
+.src-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.src.qdrant .src-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.src.neo4j .src-dot {
+  background: var(--graph);
+  box-shadow: 0 0 8px var(--graph);
+}
+.src-type {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.src.qdrant .src-type {
+  color: var(--accent);
+}
+.src.neo4j .src-type {
+  color: var(--graph);
+}
+.src-store {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+.src-score {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+.src-chev {
+  color: var(--text-dim);
+  font-weight: 700;
+  width: 12px;
+  text-align: center;
+}
+
+.src-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+.src-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+.src-body p {
+  margin: 0;
+}

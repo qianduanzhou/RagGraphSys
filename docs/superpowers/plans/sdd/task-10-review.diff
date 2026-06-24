@@ -1,0 +1,56 @@
+# Review package: Task 10
+
+## Modified: README.md
+
+--- .sdd-baseline/task-10/README.md	2026-06-22 11:38:38.780768200 +0800
++++ README.md	2026-06-22 11:39:43.774212000 +0800
+@@ -33,6 +33,7 @@
+ - **模型抽离**：`services/` 层是唯一直连大模型 API 的地方，业务/图代码不感知 HTTP 细节。
+ - **SSE 流式**：答案逐字生成 + 实时节点进度（路由 → 向量 → 图谱 → 融合 → 生成）。
+ - **优雅降级**：Qdrant / Neo4j 任一不可用都不阻塞启动，检索自动降级为空。
++- **多智能体问答模式**：RAG 智能体 + 联网智能体（Tavily）并行检索，整合智能体综合后流式输出（前端可切换，默认 RAG）。
+ - **工程规范**：配置集中（`.env`）、统一日志、统一 HTTP 客户端、完整错误处理。
+ - **自带测试**：87 个 pytest 用例，覆盖率约 **94%**，全程 mock，无需联网。
+ 
+@@ -146,6 +147,8 @@
+ | `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | 图谱连接信息 | `bolt://localhost:7687` / `neo4j` / `123456` |
+ | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 文档切分参数 | `500` / `80` |
+ | `MAX_REFLECTION_ITERATIONS` | 非流式路径最大生成次数（含反思重试） | `2` |
++| `TAVILY_API_KEY` | Tavily 联网搜索 API key（多智能体模式用；留空则联网自动降级） | （空） |
++| `TAVILY_MAX_RESULTS` | 联网搜索返回条数上限 | `5` |
+ | `APP_HOST` / `APP_PORT` | 后端监听 | `0.0.0.0` / `8000` |
+ | `CORS_ORIGINS` | 允许的前端来源（逗号分隔） | `http://localhost:5173,...` |
+ 
+@@ -157,18 +160,29 @@
+ 
+ | 方法 | 路径 | 入参 | 返回 |
+ |------|------|------|------|
+-| POST | `/api/chat` | `{message, history}` | `{answer, sources, used_rag, iterations}`（完整含反思） |
+-| POST | `/api/chat/stream` | `{message, history}` | **SSE 流式**：`node`*(管线进度) + `delta`*(逐字) → `done` / `error` |
++| POST | `/api/chat` | `{message, history, mode?}` | `{answer, sources, used_rag, iterations}`（完整含反思） |
++| POST | `/api/chat/stream` | `{message, history, mode?}` | **SSE 流式**：`node`*(管线进度) + `delta`*(逐字) → `done` / `error` |
+ | POST | `/api/ingest` | `{text, source}` | `{status, chunks, triples}` |
+ | POST | `/api/ingest/file` | multipart `file`（.txt/.md/.csv/.json/.log） | `{status, chunks, triples}` |
+-| GET | `/api/health` | — | `{status, qdrant, neo4j, counts}` 存活与依赖检查 |
++| GET | `/api/health` | — | `{status, qdrant, neo4j, counts, web_search}` 存活与依赖检查 |
+ | GET | `/api/stats` | — | `{qdrant_points, neo4j_entities}` |
+ 
++> `/api/chat`、`/api/chat/stream` 请求体新增可选字段 `mode`：`"rag"`（默认，单路 RAG 管线） / `"multi"`（多智能体模式：RAG 智能体 + 联网智能体并行 + 整合智能体）。
++
+ **SSE 帧格式**（`/api/chat/stream`）：每帧 `data: {"type": ..., ...}\n\n`
+ - `{"type":"node","node":"merge_node","update":{"sources":[...],"used_rag":true}}` —— 节点完成事件
+ - `{"type":"delta","text":"你"}` —— 逐字 token
+ - `{"type":"done"}` / `{"type":"error","message":"..."}`
+ 
++多智能体模式（`mode="multi"`）下 `node` 帧会改用以下节点名，且两个 agent 节点的 `update` 会额外携带 `answer`（原始回答文本，供前端默认折叠的原始回答面板展示）：
++
++| 节点名 | `update` 字段 |
++|--------|---------------|
++| `rag_agent_node` | `{answer, sources, hits, used_rag}` |
++| `web_agent_node` | `{answer, sources:[{type:"web",title,url,...}], hits, used_web}` |
++| `integration_node` | `{iterations}` |
++| `dispatch_node` | `{}` |
++
+ ---
+ 
+ ## 四、测试

@@ -1,0 +1,47 @@
+# Review package: Task 1 (no-git baseline->current)
+
+## Diff
+
+=== backend/core/config.py ===
+--- .sdd-baseline/task-1/config.py	2026-06-22 10:07:46.661017600 +0800
++++ backend/core/config.py	2026-06-22 10:09:28.030835500 +0800
+@@ -56,6 +56,11 @@
+     neo4j_user: str = "neo4j"
+     neo4j_password: str = "password"
+ 
++    # ---- 联网搜索（Tavily） ----
++    # 多智能体模式下「联网智能体」使用。留空则联网搜索不可用，web_agent 自动降级。
++    tavily_api_key: str = ""
++    tavily_max_results: int = 5
++
+     # ---- RAG 流水线 ----
+     chunk_size: int = 500
+     chunk_overlap: int = 80
+
+=== backend/requirements.txt ===
+--- .sdd-baseline/task-1/requirements.txt	2026-06-22 10:07:46.695203300 +0800
++++ backend/requirements.txt	2026-06-22 10:09:28.540769900 +0800
+@@ -21,6 +21,7 @@
+ # ===== 数据存储 =====
+ qdrant-client==1.11.3
+ neo4j==5.24.0
++tavily-python==0.7.26
+ 
+ # ===== 文档解析 =====
+ pypdf==5.1.0
+
+=== backend/.env.example ===
+--- .sdd-baseline/task-1/.env.example	2026-06-22 10:07:46.729005500 +0800
++++ backend/.env.example	2026-06-22 10:09:30.705945400 +0800
+@@ -29,6 +29,11 @@
+ NEO4J_USER=neo4j
+ NEO4J_PASSWORD=123456
+ 
++# ---- 联网搜索（Tavily） ----
++# 多智能体模式需要；留空则联网智能体自动降级。免费额度：https://tavily.com
++TAVILY_API_KEY=
++TAVILY_MAX_RESULTS=5
++
+ # =============================================================
+ #  RAG 流水线调参
+ # =============================================================

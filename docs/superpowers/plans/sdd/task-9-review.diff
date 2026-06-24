@@ -1,0 +1,134 @@
+# Review package: Task 9
+
+## Modified: frontend/src/components/MessageBubble.tsx
+
+--- .sdd-baseline/task-9/MessageBubble.tsx	2026-06-22 11:32:46.851496300 +0800
++++ frontend/src/components/MessageBubble.tsx	2026-06-22 11:33:35.542614300 +0800
+@@ -79,13 +79,47 @@
+             </button>
+             {sourcesOpen && (
+               <div className="msg-sources-list">
+-                {sources.map((s, i) => (
+-                  <SourceBadge key={i} source={s} />
+-                ))}
++                {sources.map((s, i) =>
++                  // web 来源渲染为可点击链接徽章，与既有 qdrant/neo4j 徽章分支并列。
++                  s.type === "web" ? (
++                    <a
++                      key={i}
++                      className="source-badge web"
++                      href={s.url}
++                      target="_blank"
++                      rel="noopener noreferrer"
++                      title={s.title || s.url}
++                    >
++                      {"🔗 "}
++                      {s.title || s.url}
++                    </a>
++                  ) : (
++                    <SourceBadge key={i} source={s} />
++                  )
++                )}
+               </div>
+             )}
+           </div>
+         )}
++
++        {/* 多智能体模式：默认折叠的 RAG / 联网 智能体原始回答面板 */}
++        {message.mode === "multi" &&
++          (message.ragAgentAnswer || message.webAgentAnswer) && (
++            <div className="agent-panels">
++              {message.ragAgentAnswer && (
++                <details className="agent-panel">
++                  <summary>📄 查看 RAG 智能体原始回答</summary>
++                  <div className="agent-panel-body">{message.ragAgentAnswer}</div>
++                </details>
++              )}
++              {message.webAgentAnswer && (
++                <details className="agent-panel">
++                  <summary>🌐 查看联网智能体原始回答</summary>
++                  <div className="agent-panel-body">{message.webAgentAnswer}</div>
++                </details>
++              )}
++            </div>
++          )}
+       </div>
+     </div>
+   );
+
+## Modified: frontend/src/components/MessageBubble.css
+
+--- .sdd-baseline/task-9/MessageBubble.css	2026-06-22 11:32:46.902110800 +0800
++++ frontend/src/components/MessageBubble.css	2026-06-22 11:33:46.511319800 +0800
+@@ -174,3 +174,71 @@
+ .pstep.done .pstep-dot {
+   background: var(--graph);
+ }
++
++/* === Task 9：多智能体模式相关样式（追加，不覆盖既有） === */
++
++/* 模式切换控件（ChatWindow 已有 .mode-switch，补配套样式） */
++.mode-switch {
++  display: inline-flex;
++  gap: 0;
++  border: 1px solid var(--border, #d0d7de);
++  border-radius: 8px;
++  overflow: hidden;
++  margin-bottom: 8px;
++}
++.mode-switch button {
++  padding: 6px 14px;
++  border: none;
++  background: transparent;
++  cursor: pointer;
++  font-size: 13px;
++  color: inherit;
++}
++.mode-switch button.active {
++  background: var(--accent, #2563eb);
++  color: #fff;
++}
++.mode-switch button:disabled {
++  opacity: 0.45;
++  cursor: not-allowed;
++}
++
++/* web 来源徽章：渲染为可点击链接 */
++.source-badge.web {
++  color: var(--link, #2563eb);
++  text-decoration: none;
++  border: 1px solid var(--border, #d0d7de);
++  border-radius: 6px;
++  padding: 2px 8px;
++  font-size: 12px;
++  align-self: flex-start;
++}
++.source-badge.web:hover {
++  background: rgba(37, 99, 235, 0.08);
++}
++
++/* 多智能体原始回答折叠面板 */
++.agent-panels {
++  margin-top: 10px;
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++.agent-panel {
++  border: 1px solid var(--border, #d0d7de);
++  border-radius: 6px;
++  padding: 6px 10px;
++  font-size: 13px;
++}
++.agent-panel summary {
++  cursor: pointer;
++  color: var(--muted, #57606a);
++  user-select: none;
++}
++.agent-panel-body {
++  margin-top: 6px;
++  padding-top: 6px;
++  border-top: 1px dashed var(--border, #d0d7de);
++  white-space: pre-wrap;
++  line-height: 1.6;
++}

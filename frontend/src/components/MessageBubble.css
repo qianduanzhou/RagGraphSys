@@ -1,0 +1,244 @@
+.msg {
+  display: flex;
+  gap: 12px;
+  max-width: 820px;
+  margin: 0 auto 22px;
+  animation: fadeUp 0.4s ease both;
+}
+
+.msg-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-muted);
+}
+.msg-user .msg-avatar {
+  background: var(--user-bubble);
+  border-color: rgba(255, 180, 84, 0.4);
+  color: var(--accent);
+}
+
+.msg-body {
+  min-width: 0;
+  flex: 1;
+  padding-top: 3px;
+}
+.msg-role {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.msg-text {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.msg-user .msg-text {
+  background: var(--user-bubble);
+  border: 1px solid rgba(255, 180, 84, 0.28);
+  padding: 11px 15px;
+  border-radius: 4px var(--radius) var(--radius) var(--radius);
+  display: inline-block;
+}
+
+.msg.is-error .msg-text {
+  color: var(--danger);
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  padding: 11px 15px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* 来源（默认折叠，点击标题栏展开） */
+.msg-sources {
+  margin-top: 12px;
+}
+.msg-sources-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.msg-sources-toggle:hover {
+  border-color: var(--border);
+  background: var(--panel);
+}
+.ms-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.ms-sum {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+}
+.ms-qd {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.ms-neo {
+  color: var(--graph);
+  background: var(--graph-soft);
+}
+.ms-chev {
+  margin-left: auto;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+.rag-flag {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(255, 180, 84, 0.3);
+}
+.msg-sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+/* 实时管线步进器（消息流式输出时显示）*/
+.pipeline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.pstep {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 3px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 20px;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.pstep-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+.pstep-sep {
+  color: var(--border);
+  margin-left: 4px;
+}
+.pstep.active {
+  color: var(--accent);
+  border-color: rgba(255, 180, 84, 0.5);
+  background: var(--accent-soft);
+}
+.pstep.active .pstep-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulseDot 1.2s infinite;
+}
+.pstep.done {
+  color: var(--graph);
+  border-color: rgba(61, 214, 140, 0.4);
+}
+.pstep.done .pstep-dot {
+  background: var(--graph);
+}
+
+/* === Task 9：多智能体模式相关样式（追加，不覆盖既有） === */
+
+/* 模式切换控件（ChatWindow 已有 .mode-switch，补配套样式） */
+.mode-switch {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.mode-switch button {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: inherit;
+}
+.mode-switch button.active {
+  background: var(--accent, #2563eb);
+  color: #fff;
+}
+.mode-switch button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* web 来源徽章：渲染为可点击链接 */
+.source-badge.web {
+  color: var(--link, #2563eb);
+  text-decoration: none;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  align-self: flex-start;
+}
+.source-badge.web:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+/* 多智能体原始回答折叠面板 */
+.agent-panels {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-panel {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.agent-panel summary {
+  cursor: pointer;
+  color: var(--muted, #57606a);
+  user-select: none;
+}
+.agent-panel-body {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border, #d0d7de);
+  white-space: pre-wrap;
+  line-height: 1.6;
+}

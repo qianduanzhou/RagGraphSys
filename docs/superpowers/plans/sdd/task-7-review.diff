@@ -1,0 +1,112 @@
+# Review package: Task 7
+
+## Modified: frontend/src/types.ts
+
+--- .sdd-baseline/task-7/types.ts	2026-06-22 11:18:39.090630600 +0800
++++ frontend/src/types.ts	2026-06-22 11:19:33.733449600 +0800
+@@ -1,10 +1,13 @@
+ export type Role = "user" | "assistant";
+ 
+ export interface SourceRef {
+-  type: "qdrant" | "neo4j";
++  type: "qdrant" | "neo4j" | "web";
+   content: string;
+   score?: number;
+   source?: string;
++  // web 来源额外字段
++  title?: string;
++  url?: string;
+ }
+ 
+ export type StepStatus = "pending" | "active" | "done";
+@@ -24,11 +27,23 @@
+   { key: "llm_node", label: "生成" },
+ ];
+ 
++export type ChatMode = "rag" | "multi";
++
++/** 多智能体模式管线，key 与多智能体 LangGraph 节点名一一对应。 */
++export const MULTI_AGENT_PIPELINE: ReadonlyArray<{ key: string; label: string }> = [
++  { key: "dispatch_node", label: "调度" },
++  { key: "rag_agent_node", label: "RAG智能体" },
++  { key: "web_agent_node", label: "联网智能体" },
++  { key: "integration_node", label: "整合" },
++];
++
+ export interface NodeUpdate {
+   needs_rag?: boolean;
+   used_rag?: boolean;
++  used_web?: boolean;
+   hits?: number;
+   sources?: SourceRef[];
++  answer?: string; // 多智能体下两个 agent 的原始回答文本
+   iterations?: number;
+   passed?: boolean;
+   feedback?: string;
+@@ -40,9 +55,13 @@
+   content: string;
+   sources?: SourceRef[];
+   usedRag?: boolean;
++  usedWeb?: boolean;
+   error?: boolean;
+   streaming?: boolean;
++  mode?: ChatMode;
+   steps?: PipelineStep[];
++  ragAgentAnswer?: string; // 多智能体：RAG 智能体原始回答（折叠面板）
++  webAgentAnswer?: string; // 多智能体：联网智能体原始回答（折叠面板）
+ }
+ 
+ export interface StreamCallbacks {
+@@ -98,6 +117,7 @@
+   status: string;
+   qdrant: boolean;
+   neo4j: boolean;
++  web_search: boolean;
+   counts: {
+     qdrant_points?: number;
+     neo4j_entities?: number;
+
+## Modified: frontend/src/api/client.ts
+
+--- .sdd-baseline/task-7/client.ts	2026-06-22 11:18:39.161928700 +0800
++++ frontend/src/api/client.ts	2026-06-22 11:20:14.120429100 +0800
+@@ -1,6 +1,7 @@
+ import type {
+   BatchIngestResponse,
+   ChatHistoryItem,
++  ChatMode,
+   ChatResponse,
+   DeleteDocResponse,
+   HealthResponse,
+@@ -24,12 +25,13 @@
+ 
+ export async function chat(
+   message: string,
+-  history: ChatHistoryItem[]
++  history: ChatHistoryItem[],
++  mode: ChatMode = "rag"
+ ): Promise<ChatResponse> {
+   const res = await fetch(`${BASE}/chat`, {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify({ message, history }),
++    body: JSON.stringify({ message, history, mode }),
+   });
+   if (!res.ok) throw new Error(await parseError(res));
+   return res.json();
+@@ -109,12 +111,13 @@
+ export async function chatStream(
+   message: string,
+   history: ChatHistoryItem[],
+-  cb: StreamCallbacks
++  cb: StreamCallbacks,
++  mode: ChatMode = "rag"
+ ): Promise<void> {
+   const res = await fetch(`${BASE}/chat/stream`, {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify({ message, history }),
++    body: JSON.stringify({ message, history, mode }),
+   });
+   if (!res.ok) {
+     cb.onError?.(await parseError(res));

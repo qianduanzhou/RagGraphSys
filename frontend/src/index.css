@@ -1,0 +1,310 @@
+/* =====================================================================
+   Hybrid RAG ·「知识实验室」蓝图主题
+   字体：Fraunces（展示衬线）· Hanken Grotesk（正文）· JetBrains Mono（等宽）
+   ===================================================================== */
+
+:root {
+  /* 表面色 */
+  --bg: #0b0e13;
+  --bg-deep: #070a0e;
+  --panel: #12161d;
+  --panel-2: #161b23;
+  --elevated: #1b212b;
+  --border: #232b36;
+  --border-soft: #1a2029;
+
+  /* 文字色 */
+  --text: #e7edf4;
+  --text-muted: #93a0b0;
+  --text-dim: #5f6b7a;
+
+  /* 强调色 */
+  --accent: #ffb454;        /* 琥珀 — 主色 / Qdrant（向量）*/
+  --accent-soft: #ffb45422;
+  --accent-glow: #ffb45455;
+  --graph: #3dd68c;          /* 翠绿 — Neo4j（图谱）*/
+  --graph-soft: #3dd68c22;
+  --danger: #ff6b6b;
+  --user-bubble: #241b12;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 18px 40px -22px rgba(0, 0, 0, 0.85);
+
+  --font-display: "Fraunces", "Times New Roman", serif;
+  --font-body: "Hanken Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--text);
+  background-color: var(--bg-deep);
+  /* 蓝图网格背景 + 柔和径向辉光 */
+  background-image:
+    radial-gradient(900px 600px at 78% -8%, rgba(255, 180, 84, 0.07), transparent 60%),
+    radial-gradient(700px 500px at 8% 108%, rgba(61, 214, 140, 0.06), transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 44px 44px, 44px 44px;
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #313c4a;
+  background-clip: padding-box;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+/* ---------- 动画 ---------- */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.94) translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes blink {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@keyframes pulseDot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes glowPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 22px 2px var(--accent-glow);
+  }
+}
+@keyframes dash {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+/* ---------- Markdown 样式 ---------- */
+.markdown {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
+  word-break: break-word;
+}
+.markdown > *:first-child {
+  margin-top: 0;
+}
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+.markdown p {
+  margin: 0 0 12px;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 22px 0 10px;
+  letter-spacing: -0.01em;
+}
+.markdown h1 {
+  font-size: 1.5rem;
+}
+.markdown h2 {
+  font-size: 1.25rem;
+}
+.markdown h3 {
+  font-size: 1.08rem;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0 0 12px;
+  padding-left: 1.4em;
+}
+.markdown li {
+  margin: 4px 0;
+}
+.markdown blockquote {
+  position: relative;
+  margin: 10px 0 12px;
+  padding: 10px 14px 6px;
+  border-left: 3px solid var(--accent);
+  color: var(--text);
+  background: var(--accent-soft);
+  border-radius: 0 6px 6px 0;
+}
+/* 角标：标识该引用块内容来自入库文档（区别于模型自身的普通段落） */
+.markdown blockquote::before {
+  content: "📄 来自文档";
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  margin-bottom: 5px;
+}
+.markdown blockquote p {
+  margin: 0 0 6px;
+}
+.markdown blockquote p:last-child {
+  margin-bottom: 0;
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: #0c1016;
+  border: 1px solid var(--border-soft);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: #ffd591;
+}
+.markdown pre {
+  background: #0c1016 !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 14px;
+}
+.markdown pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 0.84em;
+  line-height: 1.6;
+}
+.markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 14px;
+  font-size: 0.9rem;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 7px 11px;
+  text-align: left;
+}
+.markdown th {
+  background: var(--panel-2);
+  font-weight: 600;
+}
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+/* 针对深色主题的 highlight.js 配色微调 */
+.hljs {
+  color: var(--text);
+  background: transparent;
+}
+.hljs-keyword,
+.hljs-built_in,
+.hljs-type {
+  color: #ffb454;
+}
+.hljs-string,
+.hljs-attr {
+  color: #3dd68c;
+}
+.hljs-comment {
+  color: #5f6b7a;
+  font-style: italic;
+}
+.hljs-number,
+.hljs-literal {
+  color: #f0a3ff;
+}
+.hljs-title,
+.hljs-function .hljs-title,
+.hljs-section {
+  color: #8ec5ff;
+}

@@ -1,0 +1,205 @@
+# Review package: Task 6
+
+## Modified: backend/api.py
+
+--- .sdd-baseline/task-6/api.py	2026-06-22 10:43:27.826949400 +0800
++++ backend/api.py	2026-06-22 10:50:04.139302300 +0800
+@@ -11,7 +11,7 @@
+ 
+ import json
+ from pathlib import Path
+-from typing import Any, Dict, List, Optional
++from typing import Any, Dict, List, Literal, Optional
+ 
+ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+ from fastapi.responses import StreamingResponse
+@@ -37,6 +37,7 @@
+ class ChatRequest(BaseModel):
+     message: str = Field(..., min_length=1)
+     history: Optional[List[ChatMessage]] = Field(default_factory=list)
++    mode: Literal["rag", "multi"] = "rag"
+ 
+ 
+ class ChatResponse(BaseModel):
+@@ -96,6 +97,19 @@
+     return graph, rag
+ 
+ 
++def _select_graph(request: Request, mode: str):
++    """按模式选择编译图。multi_agent_graph 缺失时返回 503（正常不触发，图始终构建）。"""
++    if mode == "multi":
++        graph = getattr(request.app.state, "multi_agent_graph", None)
++        if graph is None:
++            raise HTTPException(status_code=503, detail="多智能体模式不可用")
++        return graph
++    graph = getattr(request.app.state, "graph", None)
++    if graph is None:
++        raise HTTPException(status_code=503, detail="application not initialised")
++    return graph
++
++
+ def _history_to_dicts(history: Optional[List[ChatMessage]]) -> List[Dict[str, str]]:
+     if not history:
+         return []
+@@ -108,6 +122,8 @@
+ @router.get("/health")
+ def health(request: Request) -> Dict[str, Any]:
+     rag = getattr(request.app.state, "rag", None)
++    web = getattr(request.app.state, "web", None)
++    web_ok = bool(web.available) if web is not None else False
+     qdrant_ok = neo4j_ok = False
+     counts: Dict[str, Any] = {}
+     if rag is not None:
+@@ -125,14 +141,15 @@
+         "status": "ok" if (qdrant_ok and neo4j_ok) else "degraded",
+         "qdrant": qdrant_ok,
+         "neo4j": neo4j_ok,
++        "web_search": web_ok,
+         "counts": counts,
+     }
+ 
+ 
+ @router.post("/chat", response_model=ChatResponse)
+ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+-    graph, _ = _state(request)
+-    logger.info("/chat question=%s", payload.message[:120])
++    graph = _select_graph(request, payload.mode)
++    logger.info("/chat mode=%s question=%s", payload.mode, payload.message[:120])
+     try:
+         result = graph.invoke(
+             {
+@@ -182,15 +199,33 @@
+         return {"sources": update.get("sources", []), "used_rag": update.get("used_rag")}
+     if node == "llm_node":
+         return {"iterations": update.get("iterations")}
++    if node == "dispatch_node":
++        return {}
++    if node == "rag_agent_node":
++        sources = update.get("rag_agent_sources", []) or []
++        return {
++            "answer": update.get("rag_agent_answer", ""),
++            "sources": sources,
++            "hits": len(sources),
++            "used_rag": update.get("used_rag"),
++        }
++    if node == "web_agent_node":
++        sources = update.get("web_sources", []) or []
++        return {
++            "answer": update.get("web_agent_answer", ""),
++            "sources": sources,
++            "hits": len(sources),
++            "used_web": update.get("used_web"),
++        }
++    if node == "integration_node":
++        return {"iterations": update.get("iterations")}
+     return {}
+ 
+ 
+ @router.post("/chat/stream")
+ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
+     """SSE 流：`node` 帧（updates 模式的流水线进度）与 `delta`（custom 模式的字符增量）交替输出。"""
+-    graph = getattr(request.app.state, "graph", None)
+-    if graph is None:
+-        raise HTTPException(status_code=503, detail="application not initialised")
++    graph = _select_graph(request, payload.mode)
+ 
+     initial = {
+         "question": payload.message,
+
+## Modified: backend/tests/test_api.py
+
+--- .sdd-baseline/task-6/test_api.py	2026-06-22 10:43:27.864190500 +0800
++++ backend/tests/test_api.py	2026-06-22 10:44:10.165038000 +0800
+@@ -265,3 +265,92 @@
+     assert body["failed"] == 1
+     assert body["succeeded"] == 0
+     assert body["files"][0]["ok"] is False
++
++
++# ------------------------------------------------------------------ #
++# 多智能体模式（mode="multi"）
++# ------------------------------------------------------------------ #
++def test_summarize_rag_agent_includes_answer():
++    out = _summarize_update("rag_agent_node", {
++        "rag_agent_answer": "RA", "rag_agent_sources": [{"type": "qdrant", "content": "c"}], "used_rag": True,
++    })
++    assert out == {"answer": "RA", "sources": [{"type": "qdrant", "content": "c"}], "hits": 1, "used_rag": True}
++
++
++def test_summarize_web_agent_includes_answer():
++    out = _summarize_update("web_agent_node", {
++        "web_agent_answer": "WA", "web_sources": [{"type": "web", "url": "http://x"}], "used_web": True,
++    })
++    assert out == {"answer": "WA", "sources": [{"type": "web", "url": "http://x"}], "hits": 1, "used_web": True}
++
++
++def test_summarize_dispatch_is_empty():
++    assert _summarize_update("dispatch_node", {}) == {}
++
++
++def test_summarize_integration_iterations():
++    assert _summarize_update("integration_node", {"answer": "x", "iterations": 1}) == {"iterations": 1}
++
++
++def test_chat_multi_routes_to_multi_graph(client):
++    class _MockMulti:
++        def invoke(self, state):
++            return {"answer": "multi-answer", "sources": [], "used_rag": True, "iterations": 1}
++
++    main.app.state.multi_agent_graph = _MockMulti()
++    r = client.post("/api/chat", json={"message": "hi", "history": [], "mode": "multi"})
++    assert r.status_code == 200
++    assert r.json()["answer"] == "multi-answer"
++
++
++def test_chat_default_mode_is_rag(client):
++    """不传 mode 时默认 rag，走原 graph。"""
++    class _MockGraph:
++        def invoke(self, state):
++            return {"answer": "rag-answer", "sources": [], "used_rag": False, "iterations": 1}
++
++    main.app.state.graph = _MockGraph()
++    r = client.post("/api/chat", json={"message": "hi", "history": []})
++    assert r.status_code == 200
++    assert r.json()["answer"] == "rag-answer"
++
++
++def test_chat_multi_503_when_graph_missing(client):
++    main.app.state.multi_agent_graph = None
++    r = client.post("/api/chat", json={"message": "hi", "history": [], "mode": "multi"})
++    assert r.status_code == 503
++
++
++def test_health_includes_web_search(client):
++    class _Web:
++        available = True
++
++    main.app.state.web = _Web()
++    r = client.get("/api/health")
++    assert r.status_code == 200
++    assert r.json()["web_search"] is True
++
++
++def test_chat_stream_multi_emits_agent_nodes(client):
++    class _MockMultiStream:
++        async def astream(self, initial, stream_mode=("updates",)):
++            yield ("updates", {"dispatch_node": {}})
++            yield ("updates", {"rag_agent_node": {"rag_agent_answer": "RA", "rag_agent_sources": [], "used_rag": True}})
++            yield ("updates", {"web_agent_node": {"web_agent_answer": "WA", "web_sources": [], "used_web": False}})
++            yield ("custom", {"type": "delta", "text": "整"})
++            yield ("custom", {"type": "delta", "text": "合"})
++            yield ("updates", {"integration_node": {"answer": "整合", "iterations": 1}})
++
++    main.app.state.multi_agent_graph = _MockMultiStream()
++    with client.stream("POST", "/api/chat/stream", json={"message": "q", "history": [], "mode": "multi"}) as r:
++        body = "".join(r.iter_text())
++    frames = []
++    for block in body.split("\n\n"):
++        data_lines = [ln for ln in block.split("\n") if ln.startswith("data:")]
++        if data_lines:
++            frames.append(json.loads(data_lines[0][len("data:"):].strip()))
++    nodes = [f.get("node") for f in frames if f["type"] == "node"]
++    assert "rag_agent_node" in nodes and "web_agent_node" in nodes and "integration_node" in nodes
++    rag = next(f for f in frames if f.get("node") == "rag_agent_node")
++    assert rag["update"]["answer"] == "RA"
++    assert frames[-1]["type"] == "done"
