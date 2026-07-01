@@ -26,3 +26,9 @@ frontend/.vite/
 .DS_Store
 .idea/
 .vscode/
+
+# Sub-project local env files
+frontend/.env
+backend/.env
+!frontend/.env.example
+!backend/.env.example

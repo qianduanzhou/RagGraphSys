@@ -1,4 +1,4 @@
-# Hybrid Graph + Vector RAG 智能问答系统
+﻿# Hybrid Graph + Vector RAG 智能问答系统
 
 一个可直接运行的、企业级**混合检索 RAG 系统**：以 **LangGraph** 状态机编排单路「路由 → 双路召回 → 复合 → 生成 → 反思」全流程，**Qdrant** 做向量语义检索，**Neo4j** 做知识图谱推理；大模型通过 **OpenAI 兼容接口**接入（默认 `glm-5.2` + `embedding-3`，可替换为任意 OpenAI 兼容模型）。另提供**多智能体问答模式**（RAG + 联网搜索 + 整合）。前端提供 ChatGPT 风格对话界面，支持 **SSE 流式逐字输出**与**实时流水线进度**，并内置**文档库管理**（多文件批量上传 / 列表 / 删除）。
 
@@ -72,15 +72,20 @@ RagGraphSys/
 │  ├─ tests/                      # pytest 测试套件（173 个）
 │  ├─ requirements.txt            # 运行依赖
 │  ├─ requirements-dev.txt        # 开发/测试依赖
-│  ├─ .env.example                # 环境变量示例
+│  ├─ .env.example                # 环境变量示例（开发用）
+│  ├─ Dockerfile                  # 后端镜像
+│  ├─ docker-compose.yaml         # 生产：backend + Qdrant + Neo4j
+│  ├─ docker-compose.dev.yaml     # 开发：仅 Qdrant + Neo4j
 │  └─ pytest.ini / conftest.py    # 测试配置
 ├─ frontend/                      # 前端 React + Vite + TS
-│  └─ src/
-│     ├─ App.tsx                  # 顶层状态与流式编排
-│     ├─ api/client.ts            # /api 调用 + SSE 解析
-│     ├─ chat-history.ts          # 会话历史本地持久化
-│     └─ components/              # Sidebar（文档库）/ ChatWindow / MessageBubble（Markdown+高亮）/ SourceBadge
-├─ docker-compose.yml             # 数据层：Qdrant + Neo4j
+│  ├─ src/
+│  │  ├─ App.tsx                  # 顶层状态与流式编排
+│  │  ├─ api/client.ts            # /api 调用 + SSE 解析
+│  │  ├─ chat-history.ts          # 会话历史本地持久化
+│  │  └─ components/              # Sidebar（文档库）/ ChatWindow / MessageBubble（Markdown+高亮）/ SourceBadge
+│  ├─ Dockerfile                  # 多阶段：Node 构建 → nginx
+│  ├─ docker-compose.yaml         # 生产：nginx，对外 7847
+│  └─ nginx.conf                  # SPA 托管 + /api 反代（SSE 关缓冲）
 └─ README.md
 ```
 
@@ -97,17 +102,17 @@ RagGraphSys/
 
 ### 步骤 1：启动数据层（Qdrant + Neo4j）
 
-在项目根目录执行：
+在 `backend/` 目录执行：
 
 ```bash
-docker compose up -d
+cd backend && docker compose -f docker-compose.dev.yaml up -d
 ```
 
 启动后会得到：
 - Qdrant Dashboard：http://localhost:6333/dashboard
-- Neo4j Browser：http://localhost:7474 （账号 `neo4j` / 密码见 `docker-compose.yml` 的 `NEO4J_AUTH`）
+- Neo4j Browser：http://localhost:7474 （账号 `neo4j` / 密码见 `backend/.env` 的 `NEO4J_PASSWORD`）
 
-> ⚠️ **Neo4j 5.x 要求密码至少 8 位**。若 `NEO4J_AUTH=neo4j/123456` 启动报错或鉴权失败，请把 `docker-compose.yml` 的 `NEO4J_AUTH` 与 `backend/.env` 的 `NEO4J_PASSWORD` **同时**改成 8 位以上（如 `12345678`）。
+> `docker-compose.dev.yaml` 会自动读取 `backend/.env` 的 `NEO4J_USER` / `NEO4J_PASSWORD` 给 Neo4j 设密码，与后端读取的密码天然一致（Neo4j 5.x 要求 ≥ 8 位，请确保 `backend/.env` 的 `NEO4J_PASSWORD` 为 8 位以上）。
 
 ### 步骤 2：配置并启动后端
 
@@ -284,87 +289,83 @@ npm run test        # vitest run
                   └─→ LLM API（OpenAI 兼容）
 ```
 
-### 5.1 数据层
-
-生产环境直接用 `docker compose up -d` 启动 Qdrant + Neo4j（已配置持久化卷 `qdrant_data` / `neo4j_data`）。如需更高可用，可替换为云托管服务，只需修改 `.env` 中的连接地址与凭证。
-
-### 5.2 后端
-
-后端无需编译，安装依赖后直接运行。生产环境推荐多进程：
+### 5.1 准备配置
 
 ```bash
-# Linux / macOS：gunicorn + uvicorn worker
-pip install gunicorn
-gunicorn main:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000
+cd backend
+cp .env.example .env
+vi .env    # 填镜像仓库配置、镜像名称、LLM_API_KEY、NEO4J_PASSWORD 等
 
-# 或直接用 uvicorn（Windows 也适用）
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+cd ../frontend
+cp .env.example .env
+vi .env    # 填镜像仓库配置
 ```
 
-> 说明：`gunicorn` 依赖 `fork`，**Windows 原生不支持**；Windows 上请用 `uvicorn --workers`，或把后端容器化（见 5.5）。
+前后端各自的 `.env` 已被 `.gitignore` 忽略，可放真实密钥；`.env.example` 作为模板提交。
 
-生产环境 `.env` 注意事项：
-- `LLM_API_KEY` 通过环境变量/密钥管理注入，**不要提交到代码库**。
-- `CORS_ORIGINS` 改为正式前端域名（若前后端同源经 Nginx 反代可不配置）。
-- `NEO4J_PASSWORD` 使用强密码（≥ 8 位）。
-- 建议启用 HTTPS（由 Nginx 终结 TLS）。
-
-### 5.3 前端
+### 5.2 打包镜像
 
 ```bash
-cd frontend
-npm install
-npm run build          # 产物输出到 frontend/dist
+cd backend
+python script/build_image.py
+
+cd ../frontend
+# 只打包镜像：npm run image:build
+# 打包并推送镜像：npm run image:push
+npm run image:push
 ```
 
-将 `dist/` 目录交给 Web 服务器（Nginx / Caddy / 对象存储）托管即可。
+### 5.3 部署启动
 
-### 5.4 Nginx 配置示例
+部署机分别进入后端、前端目录，使用各自 `.env` 拉取镜像并启动：
 
-关键点：`/api/` 反代到后端，并**关闭缓冲**以支持 SSE 流式：
+```bash
+cd backend
+docker compose --env-file .env -f docker-compose.yaml up -d
 
-```nginx
-server {
-    listen 80;
-    server_name your.domain.com;
-
-    # 前端静态资源
-    location / {
-        root /var/www/rag-frontend/dist;
-        try_files $uri $uri/ /index.html;
-    }
-
-    # 后端 API 反代
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        # SSE 流式必备：关闭缓冲、延长超时
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 300s;
-        chunked_transfer_encoding on;
-    }
-}
+cd ../frontend
+docker compose --env-file .env -f docker-compose.yaml up -d
 ```
 
-### 5.5（可选）全栈容器化
+两个 compose 都使用共享网络 `rag-net`（由 Docker Compose 自动创建/复用）。前端可独立于后端启动——nginx 用动态解析反代，后端就绪后自动连通，无需重启前端。详见 [backend/README.md](backend/README.md) 与 [frontend/README.md](frontend/README.md)。
 
-当前 `docker-compose.yml` 只包含数据层。如需「一条命令拉起全栈」，可为后端、前端各编写 `Dockerfile` 并加入同一 compose（后端依赖 Qdrant/Neo4j 健康检查，前端构建后由 Nginx 容器托管）。该方向已列入下文「升级方向」。
+### 5.3 验证
+
+```bash
+make ps
+curl http://localhost/api/health     # status=ok 或 degraded
+```
+
+浏览器访问 `http://<服务器IP>`。
+
+### 5.4 运维
+
+```bash
+cd backend
+docker compose --env-file .env -f docker-compose.yaml logs -f --tail=50
+docker compose --env-file .env -f docker-compose.yaml down
+
+cd ../frontend
+docker compose --env-file .env -f docker-compose.yaml logs -f --tail=50
+docker compose --env-file .env -f docker-compose.yaml down
+```
+
+- **Neo4j 首次启动需 20–30s**，期间后端日志出现 `Neo4j unavailable at startup` 属正常，DB 就绪后客户端惰性重连自动恢复。
+- **数据持久化**：`qdrant_data`、`neo4j_data` 卷，`make down` 不丢；只有 `docker compose down -v` 才删卷。
+- **SSE 流式**：nginx 已配 `proxy_buffering off` + 300s 超时。
+- **生产 `.env` 注意**：`LLM_API_KEY` 走 `.env` 注入不入库；`CORS_ORIGINS` 同源部署可不改；建议后续在 nginx 前加 HTTPS。
 
 ### 端口对照
 
-| 服务 | 端口 | 用途 |
-|------|------|------|
-| Qdrant HTTP | 6333 | 向量库 REST / Dashboard |
-| Qdrant gRPC | 6334 | 向量库 gRPC |
-| Neo4j Bolt | 7687 | 图谱连接 |
-| Neo4j Browser | 7474 | 图谱 Web 管理台 |
-| 后端 FastAPI | 8000 | API 服务（`/docs` Swagger） |
-| 前端 Vite | 5173 | 开发服务器（生产用 Nginx 80/443） |
+| 服务 | 端口 | 用途 | 生产是否对外 |
+|------|------|------|------------|
+| 前端 nginx | 7847 | 对外入口（SPA + `/api` 反代） | ✅ 唯一对外 |
+| 后端 FastAPI | 8000 | API 服务（`/docs`） | ❌ 仅内部网络 |
+| Qdrant HTTP | 6333 | 向量库 REST / Dashboard | ❌ 仅内部（后端开发 compose 启动时映射到 localhost） |
+| Qdrant gRPC | 6334 | 向量库 gRPC | ❌ 仅内部 |
+| Neo4j Bolt | 7687 | 图谱连接 | ❌ 仅内部（开发时 localhost） |
+| Neo4j Browser | 7474 | 图谱 Web 管理台 | ❌ 仅内部（开发时 localhost） |
+| 前端 Vite | 5173 | 开发服务器 | ❌ 仅开发用 |
 
 ---
 
@@ -382,7 +383,7 @@ server {
 
 | 问题 | 解决 |
 |------|------|
-| Neo4j 启动/鉴权失败 | 5.x 要求密码 ≥ 8 位；统一修改 `docker-compose.yml` 的 `NEO4J_AUTH` 与 `.env` 的 `NEO4J_PASSWORD` |
+| Neo4j 启动/鉴权失败 | 5.x 要求密码 ≥ 8 位；开发用 `backend/docker-compose.dev.yaml`（自动读 `backend/.env`），生产用 `backend/docker-compose.yaml`（自动读根 `.env`），密码与后端天然一致 |
 | 前端跨域报错 | 开发期 Vite 已代理 `/api`；生产期用 Nginx 同源反代，或在 `.env` 配 `CORS_ORIGINS` |
 | 流式答案一次性出现、不逐字 | Nginx/代理缓冲所致；确认反代 `proxy_buffering off`（后端已下发 `X-Accel-Buffering: no`） |
 | 模型接口 401 | 检查 `.env` 的 `LLM_API_KEY`、`LLM_BASE_URL` 是否正确、是否生效（重启后端） |
@@ -401,7 +402,7 @@ server {
 | 可观测性 | 文件日志 | LangGraph checkpoint 状态回放 + LangSmith/Langfuse trace + Prometheus 指标 |
 | 并发与缓存 | 同步节点 | 节点内 `asyncio.gather` 并发召回、语义缓存 |
 | 安全 | 本地 Bearer | 密钥过 Vault、API 鉴权（JWT）、速率限制 |
-| 工程化 | 单进程 + 测试 | 全栈 Dockerfile 一键部署、CI（lint + pytest + 前端 build） |
+| 工程化 | 全栈 Docker Compose 部署 + 测试 | CI（lint + pytest + 前端 build）、多副本 / 负载均衡 |
 | 数据接入 | 纯文本 + 多格式文件 | 网页爬取、增量更新与删除、知识库分集合 |
 
 ---
@@ -409,3 +410,11 @@ server {
 ## License
 
 本项目用于学习与企业内部参考，可按需自由使用与修改。
+
+
+
+
+
+
+
+

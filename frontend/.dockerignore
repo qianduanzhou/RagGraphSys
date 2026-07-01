@@ -1,0 +1,9 @@
+﻿# -*- coding: utf-8 -*-
+node_modules/
+dist/
+.vite/
+*.local
+.env
+.env.*
+!.env.example
+.git/

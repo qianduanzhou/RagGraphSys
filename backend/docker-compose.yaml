@@ -1,0 +1,46 @@
+﻿# -*- coding: utf-8 -*-
+# 后端生产编排：部署机只需要准备 .env，然后执行：
+#   docker compose --env-file .env -f docker-compose.yaml up -d
+# Compose 会按 .env 中的 IMAGE_PUSH_ADDRESS / IMAGE_NAME / IMAGE_TAG 拉取已推送的后端镜像，
+# 并在同一编排内启动生产 Qdrant 与 Neo4j。
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks: [rag-net]
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.24
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+    volumes:
+      - neo4j_data:/data
+    networks: [rag-net]
+    restart: unless-stopped
+
+  backend:
+    image: ${IMAGE_PUSH_ADDRESS}/${IMAGE_NAME}:${IMAGE_TAG}
+    hostname: backend
+    env_file: ${APP_ENV_FILE:-.env}
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - NEO4J_URI=bolt://neo4j:7687
+    ports:
+      - "${BACKEND_PORT:-7846}:8000"
+    depends_on: [qdrant, neo4j]
+    networks: [rag-net]
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  neo4j_data:
+
+networks:
+  rag-net:
+    name: rag-net
+
+
+
