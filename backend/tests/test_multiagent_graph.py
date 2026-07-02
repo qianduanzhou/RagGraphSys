@@ -5,7 +5,7 @@ from tests.conftest import MockLLM
 
 
 class FakeRag:
-    def build_context(self, query, top_k=None):
+    def build_context(self, query, top_k=None, owner=None):
         return {"context": "文档内容", "sources": [{"type": "qdrant", "content": "c"}], "used_rag": True}
 
 
@@ -29,7 +29,7 @@ def test_graph_runs_rag_and_web_then_integration(settings):
 
 def test_graph_degrades_when_both_empty(settings):
     class _EmptyRag:
-        def build_context(self, query, top_k=None):
+        def build_context(self, query, top_k=None, owner=None):
             return {"context": "", "sources": [], "used_rag": False}
 
     class _EmptyWeb:

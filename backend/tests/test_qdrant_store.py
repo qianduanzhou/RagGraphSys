@@ -107,3 +107,21 @@ def test_delete_by_source_no_match(settings):
     store.upsert(["a"], metadatas=[{"source": "a.txt"}])
     assert store.delete_by_source("missing.txt") == 0
     assert len(store.client.points) == 1
+
+
+def test_owner_filter_scopes_scan_count_and_delete(settings):
+    store = make_store(settings)
+    store.upsert(
+        ["a1", "a2", "b1"],
+        metadatas=[
+            {"source": "same.txt", "owner": "alice"},
+            {"source": "same.txt", "owner": "alice"},
+            {"source": "same.txt", "owner": "bob"},
+        ],
+    )
+
+    assert store.count(owner="alice") == 2
+    assert len(store.scan_all(owner="alice")) == 2
+    assert store.delete_by_source("same.txt", owner="alice") == 2
+    assert store.count(owner="alice") == 0
+    assert store.count(owner="bob") == 1

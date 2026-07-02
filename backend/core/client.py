@@ -83,7 +83,7 @@ class HttpClient:
                 logger.warning("request to %s failed (%s); retrying in %.1fs", url, exc, sleep_for)
                 time.sleep(sleep_for)
 
-        raise HttpClientError(f"request to {url} failed after {attempt} attempts: {last_exc}") from last_exc
+        raise HttpClientError(f"请求 {url} 在 {attempt} 次尝试后仍失败：{last_exc}") from last_exc
 
     def post_json(self, url: str, payload: Any, headers: Optional[dict] = None) -> Any:
         """以 JSON 形式 POST ``payload``，返回解析后的 JSON 响应。"""

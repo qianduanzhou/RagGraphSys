@@ -56,7 +56,7 @@ class QdrantStore:
             return 0
         metadatas = metadatas or [{} for _ in texts]
         if len(metadatas) != len(texts):
-            raise ValueError("metadatas length must match texts length")
+            raise ValueError("元数据数量必须与文本数量一致")
 
         vectors = self.embedding.embed_batch(texts)
         points = [
@@ -71,10 +71,24 @@ class QdrantStore:
         logger.info("Upserted %d points into '%s'", len(points), self.collection)
         return len(points)
 
+    @staticmethod
+    def _payload_filter(**matches: Optional[str]) -> Optional[models.Filter]:
+        conditions = [
+            models.FieldCondition(key=key, match=models.MatchValue(value=value))
+            for key, value in matches.items()
+            if value is not None
+        ]
+        return models.Filter(must=conditions) if conditions else None
+
     # ------------------------------------------------------------------ #
     # 读取
     # ------------------------------------------------------------------ #
-    def search(self, query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        owner: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """cosine 相似度检索；返回最匹配的 top_k 条结果及其 payload。"""
         limit = top_k or self.settings.qdrant_top_k
         query_vector = self.embedding.embed(query)
@@ -83,6 +97,7 @@ class QdrantStore:
             query=query_vector,
             limit=limit,
             with_payload=True,
+            query_filter=self._payload_filter(owner=owner),
         )
         results = []
         for point in response.points:
@@ -98,9 +113,13 @@ class QdrantStore:
         logger.info("Qdrant search returned %d results for: %s", len(results), query[:80])
         return results
 
-    def count(self) -> int:
+    def count(self, owner: Optional[str] = None) -> int:
         try:
-            result = self.client.count(collection_name=self.collection, exact=True)
+            result = self.client.count(
+                collection_name=self.collection,
+                exact=True,
+                count_filter=self._payload_filter(owner=owner),
+            )
             return result.count
         except Exception as exc:  # noqa: BLE001
             logger.warning("count failed: %s", exc)
@@ -109,26 +128,19 @@ class QdrantStore:
     # ------------------------------------------------------------------ #
     # 删除
     # ------------------------------------------------------------------ #
-    def delete_by_source(self, source: str) -> int:
+    def delete_by_source(self, source: str, owner: Optional[str] = None) -> int:
         """删除某来源（文件名）文档的所有分片。返回 best-effort 删除条数。
 
         通过 payload 的 ``source`` 字段过滤删除；删除条数用前后 ``count`` 差值估算，
         若 count 不可用则返回 0（不影响实际删除是否生效）。
         """
         try:
-            before = self.count()
+            before = self.count(owner=owner)
             self.client.delete(
                 collection_name=self.collection,
-                points_selector=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="source",
-                            match=models.MatchValue(value=source),
-                        )
-                    ]
-                ),
+                points_selector=self._payload_filter(source=source, owner=owner),
             )
-            after = self.count()
+            after = self.count(owner=owner)
             removed = (before - after) if (before >= 0 and after >= 0) else 0
             logger.info(
                 "Deleted ~%d points for source=%s (before=%s after=%s)",
@@ -139,7 +151,7 @@ class QdrantStore:
             logger.warning("delete_by_source failed: %s", exc)
             return 0
 
-    def scan_all(self, batch_size: int = 256) -> List[Dict[str, Any]]:
+    def scan_all(self, batch_size: int = 256, owner: Optional[str] = None) -> List[Dict[str, Any]]:
         """扫描集合中所有点，返回 ``[{id, payload}]``。用于聚合文档列表。
 
         注意：``QdrantClient.scroll`` 返回的是 ``(records, next_offset)`` 元组而非
@@ -156,6 +168,7 @@ class QdrantStore:
                     offset=offset,
                     with_payload=True,
                     with_vectors=False,
+                    scroll_filter=self._payload_filter(owner=owner),
                 )
                 for record in records or []:
                     payload = getattr(record, "payload", None) or {}

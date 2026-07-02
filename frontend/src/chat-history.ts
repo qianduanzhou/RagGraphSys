@@ -11,3 +11,29 @@ export function buildHistory(pastMessages: ChatMessage[]): ChatHistoryItem[] {
     .filter((m) => m.id !== "welcome")
     .map((m) => ({ role: m.role, content: m.content }));
 }
+
+function storageKey(username: string): string {
+  return `rag-chat-history:${username}`;
+}
+
+export function loadUserMessages(username: string, fallback: ChatMessage[]): ChatMessage[] {
+  if (typeof localStorage === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(storageKey(username));
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as ChatMessage[];
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveUserMessages(username: string, messages: ChatMessage[]): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(storageKey(username), JSON.stringify(messages));
+}
+
+export function clearUserMessages(username: string): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.removeItem(storageKey(username));
+}

@@ -35,7 +35,7 @@ python main.py                     # http://localhost:8000 ，接口文档 /docs
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                             # 173 个用例，全 mock，无需 API Key/联网/DB
+pytest                             # 185 个用例，全 mock，无需 API Key/联网/DB
 ```
 
 ---

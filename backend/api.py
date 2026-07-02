@@ -13,11 +13,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.logger import get_logger
+from services.auth_service import AuthError
 from services.archive import extract_zip
 from services.file_parser import ALLOWED_EXTS, parse_upload
 
@@ -104,6 +105,16 @@ class BatchDeleteResponse(BaseModel):
     results: List[BatchDeleteItem]
 
 
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    username: str
+    token: str
+
+
 # ---------------------------------------------------------------------- #
 # 辅助函数
 # ---------------------------------------------------------------------- #
@@ -112,8 +123,38 @@ def _state(request: Request):
     graph = getattr(request.app.state, "graph", None)
     rag = getattr(request.app.state, "rag", None)
     if graph is None or rag is None:
-        raise HTTPException(status_code=503, detail="application not initialised")
+        raise HTTPException(status_code=503, detail="服务尚未初始化")
     return graph, rag
+
+
+def _auth(request: Request):
+    auth = getattr(request.app.state, "auth", None)
+    if auth is None:
+        raise HTTPException(status_code=503, detail="认证服务尚未初始化")
+    return auth
+
+
+def current_user(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="请先登录")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        return _auth(request).verify_token(token)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def optional_current_user(request: Request, authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        return _auth(request).verify_token(token)
+    except AuthError:
+        return None
 
 
 def _select_graph(request: Request, mode: str):
@@ -125,7 +166,7 @@ def _select_graph(request: Request, mode: str):
         return graph
     graph = getattr(request.app.state, "graph", None)
     if graph is None:
-        raise HTTPException(status_code=503, detail="application not initialised")
+        raise HTTPException(status_code=503, detail="服务尚未初始化")
     return graph
 
 
@@ -138,21 +179,48 @@ def _history_to_dicts(history: Optional[List[ChatMessage]]) -> List[Dict[str, st
 # ---------------------------------------------------------------------- #
 # 接口
 # ---------------------------------------------------------------------- #
+@router.post("/auth/register", response_model=AuthResponse)
+def register(payload: AuthRequest, request: Request) -> AuthResponse:
+    try:
+        result = _auth(request).register(payload.username, payload.password)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AuthResponse(**result)
+
+
+@router.post("/auth/login", response_model=AuthResponse)
+def login(payload: AuthRequest, request: Request) -> AuthResponse:
+    try:
+        result = _auth(request).login(payload.username, payload.password)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return AuthResponse(**result)
+
+
+@router.get("/auth/me")
+def auth_me(username: str = Depends(current_user)) -> Dict[str, str]:
+    return {"username": username}
+
+
 @router.get("/health")
-def health(request: Request) -> Dict[str, Any]:
+def health(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
     rag = getattr(request.app.state, "rag", None)
     web = getattr(request.app.state, "web", None)
+    username = optional_current_user(request, authorization)
     web_ok = bool(web.available) if web is not None else False
     qdrant_ok = neo4j_ok = False
     counts: Dict[str, Any] = {}
     if rag is not None:
         try:
-            counts["qdrant_points"] = rag.qdrant.count()
+            counts["qdrant_points"] = rag.qdrant.count(owner=username)
             qdrant_ok = counts["qdrant_points"] >= 0
         except Exception as exc:  # noqa: BLE001
             logger.warning("health: qdrant check failed: %s", exc)
         try:
-            counts["neo4j_entities"] = rag.neo4j.count_entities()
+            counts["neo4j_entities"] = rag.neo4j.count_entities(owner=username)
             neo4j_ok = True
         except Exception as exc:  # noqa: BLE001
             logger.warning("health: neo4j check failed: %s", exc)
@@ -166,7 +234,11 @@ def health(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+def chat(
+    payload: ChatRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> ChatResponse:
     graph = _select_graph(request, payload.mode)
     logger.info("/chat mode=%s question=%s", payload.mode, payload.message[:120])
     try:
@@ -175,11 +247,12 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
                 "question": payload.message,
                 "history": _history_to_dicts(payload.history),
                 "iterations": 0,
+                "owner": username,
             }
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("graph invocation failed")
-        raise HTTPException(status_code=500, detail=f"graph failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"问答流程执行失败：{exc}") from exc
 
     return ChatResponse(
         answer=result.get("answer", ""),
@@ -242,7 +315,11 @@ def _summarize_update(node: str, update: Any) -> dict:
 
 
 @router.post("/chat/stream")
-async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
+async def chat_stream(
+    payload: ChatRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> StreamingResponse:
     """SSE 流：`node` 帧（updates 模式的流水线进度）与 `delta`（custom 模式的字符增量）交替输出。"""
     graph = _select_graph(request, payload.mode)
 
@@ -251,6 +328,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
         "history": _history_to_dicts(payload.history),
         "iterations": 0,
         "streaming": True,
+        "owner": username,
     }
 
     async def event_stream():
@@ -267,7 +345,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
             yield _sse({"type": "done"})
         except Exception as exc:  # noqa: BLE001
             logger.exception("stream graph failed: %s", exc)
-            yield _sse({"type": "error", "message": f"graph failed: {exc}"})
+            yield _sse({"type": "error", "message": f"问答流程执行失败：{exc}"})
 
     return StreamingResponse(
         event_stream(),
@@ -281,25 +359,33 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
 
 
 @router.post("/ingest", response_model=IngestResponse)
-def ingest_text(payload: IngestTextRequest, request: Request) -> IngestResponse:
+def ingest_text(
+    payload: IngestTextRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> IngestResponse:
     _, rag = _state(request)
     try:
-        stats = rag.ingest_text(payload.text, source=payload.source)
+        stats = rag.ingest_text(payload.text, source=payload.source, owner=username)
     except Exception as exc:  # noqa: BLE001
         logger.exception("ingest failed")
-        raise HTTPException(status_code=500, detail=f"ingest failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"入库失败：{exc}") from exc
     return IngestResponse(status="ok", chunks=stats["chunks"], triples=stats["triples"])
 
 
 @router.post("/ingest/file", response_model=IngestResponse)
-async def ingest_file(file: UploadFile = File(...), request: Request = None) -> IngestResponse:  # type: ignore[assignment]
+async def ingest_file(
+    file: UploadFile = File(...),
+    request: Request = None,  # type: ignore[assignment]
+    username: str = Depends(current_user),
+) -> IngestResponse:
     _, rag = _state(request)
     name = file.filename or "upload"
     suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if suffix not in ALLOWED_EXTS:
         raise HTTPException(
             status_code=415,
-            detail=f"unsupported file type '{suffix}'; allowed: 文本/代码、PDF、Word(.docx)",
+            detail=f"不支持的文件类型 '{suffix}'；支持：文本/代码、PDF、Word(.docx)",
         )
 
     raw = await file.read()
@@ -309,19 +395,22 @@ async def ingest_file(file: UploadFile = File(...), request: Request = None) -> 
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        stats = rag.ingest_text(text, source=name)
+        stats = rag.ingest_text(text, source=name, owner=username)
     except Exception as exc:  # noqa: BLE001
         logger.exception("file ingest failed")
-        raise HTTPException(status_code=500, detail=f"ingest failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"入库失败：{exc}") from exc
     return IngestResponse(status="ok", chunks=stats["chunks"], triples=stats["triples"])
 
 
 @router.get("/stats")
-def stats(request: Request) -> Dict[str, Any]:
+def stats(
+    request: Request,
+    username: str = Depends(current_user),
+) -> Dict[str, Any]:
     _, rag = _state(request)
     return {
-        "qdrant_points": rag.qdrant.count(),
-        "neo4j_entities": rag.neo4j.count_entities(),
+        "qdrant_points": rag.qdrant.count(owner=username),
+        "neo4j_entities": rag.neo4j.count_entities(owner=username),
     }
 
 
@@ -336,7 +425,10 @@ class DocInfo(BaseModel):
 
 
 @router.get("/docs", response_model=List[DocInfo])
-def list_docs(request: Request) -> List[DocInfo]:
+def list_docs(
+    request: Request,
+    username: str = Depends(current_user),
+) -> List[DocInfo]:
     """返回已入库的所有文档列表（从 Qdrant payload 中按 source 聚合）。
 
     以 Qdrant 为单一事实来源：已入库的文档即使刷新界面、重启后端也仍可长期看到。
@@ -345,7 +437,7 @@ def list_docs(request: Request) -> List[DocInfo]:
     """
     _, rag = _state(request)
     try:
-        all_points = rag.qdrant.scan_all()
+        all_points = rag.qdrant.scan_all(owner=username)
     except Exception as exc:  # noqa: BLE001
         logger.warning("list_docs scan failed: %s", exc)
         return []
@@ -365,17 +457,21 @@ def list_docs(request: Request) -> List[DocInfo]:
 
 
 @router.post("/docs/delete", response_model=DeleteDocResponse)
-def delete_doc(payload: DeleteDocRequest, request: Request) -> DeleteDocResponse:
+def delete_doc(
+    payload: DeleteDocRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> DeleteDocResponse:
     """删除指定来源的文档：清除其 Qdrant 分片与 Neo4j 图谱关系。
 
     用请求体而非路径参数传递 ``source``，因为文件名可能含 ``.`` / 空格 / 中文等。
     """
     _, rag = _state(request)
     try:
-        stats = rag.delete_document(payload.source)
+        stats = rag.delete_document(payload.source, owner=username)
     except Exception as exc:  # noqa: BLE001
         logger.exception("delete doc failed for %s", payload.source)
-        raise HTTPException(status_code=500, detail=f"delete failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"删除失败：{exc}") from exc
     return DeleteDocResponse(
         source=stats["source"],
         chunks=stats["chunks"],
@@ -384,14 +480,18 @@ def delete_doc(payload: DeleteDocRequest, request: Request) -> DeleteDocResponse
 
 
 @router.post("/docs/delete/batch", response_model=BatchDeleteResponse)
-def delete_docs_batch(payload: BatchDeleteRequest, request: Request) -> BatchDeleteResponse:
+def delete_docs_batch(
+    payload: BatchDeleteRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> BatchDeleteResponse:
     """批量删除多个文档：单次请求、逐项容错（单项失败不中断整批）。
 
     复刻 ``/ingest/files`` 的批量范式：返回每个文档的 ok/failed 明细 + 聚合计数，
     便于前端展示「已删除 N 个，失败 M 个」并定位失败文档。
     """
     _, rag = _state(request)
-    stats = rag.delete_documents(payload.sources)
+    stats = rag.delete_documents(payload.sources, owner=username)
     return BatchDeleteResponse(**stats)
 
 
@@ -400,6 +500,7 @@ async def ingest_files(
     files: List[UploadFile] = File(default_factory=list),
     folder_path: Optional[str] = None,
     request: Request = None,
+    username: str = Depends(current_user),
 ) -> BatchIngestResponse:
     """批量上传多个文件或从服务器文件夹路径批量导入。
 
@@ -419,7 +520,7 @@ async def ingest_files(
     if folder_path:
         fp = Path(folder_path)
         if not fp.is_dir():
-            raise HTTPException(status_code=400, detail=f"folder not found: {folder_path}")
+            raise HTTPException(status_code=400, detail=f"文件夹不存在：{folder_path}")
         for fpath in sorted(fp.rglob("*")):
             if fpath.is_file() and fpath.suffix.lower() in ALLOWED_EXTS:
                 try:
@@ -457,7 +558,7 @@ async def ingest_files(
     if not file_sources and not zip_failures:
         raise HTTPException(
             status_code=400,
-            detail="no ingestible files provided (allowed: 文本/代码、CSV、PDF、Word(.docx)、Excel(.xlsx/.xls)、zip)",
+            detail="未提供可入库文件（支持：文本/代码、CSV、PDF、Word(.docx)、Excel(.xlsx/.xls)、zip）",
         )
 
     # 解析 + 逐个入库，收集每文件结果（zip 解压失败项预先并入）
@@ -466,7 +567,7 @@ async def ingest_files(
     for fname, raw in file_sources:
         try:
             text = parse_upload(fname, raw)
-            stats = rag.ingest_text(text, source=fname)
+            stats = rag.ingest_text(text, source=fname, owner=username)
             total_chunks += stats["chunks"]
             total_triples += stats["triples"]
             results.append(FileIngestResult(name=fname, chunks=stats["chunks"], triples=stats["triples"], ok=True))

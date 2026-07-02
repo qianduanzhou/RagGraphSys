@@ -26,3 +26,4 @@ requirements-dev.txt
 
 logs/
 *.log
+data/

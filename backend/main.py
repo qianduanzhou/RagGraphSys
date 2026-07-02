@@ -18,6 +18,7 @@ from multiagent import build_multi_agent_graph
 from rag.neo4j_store import Neo4jStore
 from rag.qdrant_store import QdrantStore
 from rag.rag_service import RagService
+from services.auth_service import AuthService
 from services.embedding_service import EmbeddingService
 from services.llm_service import LLMService
 from services.web_search_service import WebSearchService
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI):
     """构造各服务单例并挂载到 ``app.state``。"""
     logger.info("Initialising services...")
 
+    auth = AuthService(settings.auth_db_path)
     llm = LLMService(settings)
     embedding = EmbeddingService(settings)
     qdrant = QdrantStore(settings, embedding)
@@ -47,6 +49,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning("Neo4j unavailable at startup: %s", exc)
 
+    app.state.auth = auth
     app.state.llm = llm
     app.state.embedding = embedding
     app.state.qdrant = qdrant

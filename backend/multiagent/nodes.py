@@ -39,6 +39,7 @@ class MultiAgentState(TypedDict, total=False):
     answer: str
     iterations: int
     streaming: bool
+    owner: str
 
 
 class MultiAgentNodes:
@@ -63,7 +64,7 @@ class MultiAgentNodes:
     def rag_agent(self, state: MultiAgentState) -> Dict[str, Any]:
         question = state["question"]
         try:
-            retrieved = self.rag.build_context(question)
+            retrieved = self.rag.build_context(question, owner=state.get("owner"))
             context = retrieved.get("context", "") or ""
             sources = retrieved.get("sources", []) or []
             used_rag = bool(retrieved.get("used_rag", False))

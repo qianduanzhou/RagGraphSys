@@ -1,6 +1,6 @@
 ﻿# Hybrid Graph + Vector RAG 智能问答系统
 
-一个可直接运行的、企业级**混合检索 RAG 系统**：以 **LangGraph** 状态机编排单路「路由 → 双路召回 → 复合 → 生成 → 反思」全流程，**Qdrant** 做向量语义检索，**Neo4j** 做知识图谱推理；大模型通过 **OpenAI 兼容接口**接入（默认 `glm-5.2` + `embedding-3`，可替换为任意 OpenAI 兼容模型）。另提供**多智能体问答模式**（RAG + 联网搜索 + 整合）。前端提供 ChatGPT 风格对话界面，支持 **SSE 流式逐字输出**与**实时流水线进度**，并内置**文档库管理**（多文件批量上传 / 列表 / 删除）。
+一个可直接运行的、企业级**混合检索 RAG 系统**：以 **LangGraph** 状态机编排单路「路由 → 双路召回 → 复合 → 生成 → 反思」全流程，**Qdrant** 做向量语义检索，**Neo4j** 做知识图谱推理；大模型通过 **OpenAI 兼容接口**接入（默认 `glm-5.2` + `embedding-3`，可替换为任意 OpenAI 兼容模型）。另提供**多智能体问答模式**（RAG + 联网搜索 + 整合）。前端提供 ChatGPT 风格对话界面，支持 **SSE 流式逐字输出**与**实时流水线进度**，并内置**账号登录/注册**与**按账号隔离的文档库管理**（多文件批量上传 / 列表 / 删除）。
 
 ```
 用户问题 → LangGraph Router（路由判断）
@@ -52,9 +52,10 @@ dispatch ──(fan-out)──→ [rag_agent（知识库检索）, web_agent（T
 - **优雅降级**：Qdrant / Neo4j / Tavily 任一不可用都不阻塞启动，检索自动降级为空。
 - **多格式入库**：文本/代码、CSV、PDF、Word(.docx)、Excel(.xlsx/.xls)，并支持 **zip 批量解包**（含递归解压、防 zip bomb、防路径穿越）。
 - **文档库管理**：批量上传多文件、文档列表、单条 / 批量删除（清除 Qdrant 分片与 Neo4j 关系）。
+- **账号鉴权与用户隔离**：本地账号登录/注册，Bearer Token 访问受保护接口；每个账号独立维护对话历史和已入库文档。
 - **多智能体问答模式**：RAG 智能体 + 联网智能体（Tavily）并行检索，整合智能体综合后流式输出（前端可切换，默认 RAG）。
 - **工程规范**：配置集中化（`.env`）、统一日志、统一 HTTP 客户端、完整错误处理。
-- **自带测试**：**173 个 pytest 用例**（全 mock，无需 API Key、无需联网、无需启动 Qdrant/Neo4j，可直接在 CI 中运行），前端另有 vitest 单测。
+- **自带测试**：**185 个 pytest 用例**（全 mock，无需 API Key、无需联网、无需启动 Qdrant/Neo4j，可直接在 CI 中运行），前端另有 vitest 单测。
 
 ## 项目结构
 
@@ -66,10 +67,10 @@ RagGraphSys/
 │  ├─ nodes.py                    # GraphState + 6 个图节点（router/qdrant/neo4j/merge/llm/reflection）+ 路由函数
 │  ├─ graph.py                    # 构建单路 RAG 的 StateGraph
 │  ├─ core/                       # 公共模块：config / client / logger / utils
-│  ├─ services/                   # 模型与工具层：llm_service / embedding_service / file_parser / archive(zip) / web_search
+│  ├─ services/                   # 模型、鉴权与工具层：auth_service / llm_service / embedding_service / file_parser / archive(zip) / web_search
 │  ├─ rag/                        # 检索层：qdrant_store / neo4j_store / rag_service
 │  ├─ multiagent/                 # 多智能体图：graph.py + nodes.py（dispatch/rag_agent/web_agent/integration）
-│  ├─ tests/                      # pytest 测试套件（173 个）
+│  ├─ tests/                      # pytest 测试套件（185 个）
 │  ├─ requirements.txt            # 运行依赖
 │  ├─ requirements-dev.txt        # 开发/测试依赖
 │  ├─ .env.example                # 环境变量示例（开发用）
@@ -149,9 +150,10 @@ npm run dev                   # 开发服务器 http://localhost:5173
 ### 步骤 4：开始使用
 
 1. 浏览器打开 http://localhost:5173
-2. 在**左侧边栏**上传文件（`.txt` / `.md` / `.pdf` / `.docx` / `.xlsx` 等，支持多选与 `.zip` 批量）→ 系统自动切分写入 Qdrant，并抽取实体关系写入 Neo4j；文档库列表可查看与删除
-3. 在**右侧对话框**提问 → 顶部「路由 → 向量 → 图谱 → 复合 → 生成」进度条实时点亮，答案逐字流出，并展示来源徽章（Qdrant 浅蓝 / Neo4j 翠绿）
-4. 顶部可切换问答模式：**RAG**（默认，单路检索）或 **多智能体**（RAG + 联网并行整合）
+2. 先注册或登录账号（账号至少 5 位，仅数字/字母；密码长度需超过 8 位，仅数字/字母/英文符号）
+3. 在**左侧边栏**上传文件（`.txt` / `.md` / `.pdf` / `.docx` / `.xlsx` 等，支持多选与 `.zip` 批量）→ 系统自动切分写入 Qdrant，并抽取实体关系写入 Neo4j；文档库列表可查看与删除，且只对当前账号可见
+4. 在**右侧对话框**提问 → 顶部「路由 → 向量 → 图谱 → 复合 → 生成」进度条实时点亮，答案逐字流出，并展示来源徽章（Qdrant 浅蓝 / Neo4j 翠绿）
+5. 顶部可切换问答模式：**RAG**（默认，单路检索）或 **多智能体**（RAG + 联网并行整合）
 
 ---
 
@@ -181,12 +183,23 @@ npm run dev                   # 开发服务器 http://localhost:5173
 | `APP_HOST` / `APP_PORT` | 后端监听 | `0.0.0.0` / `8000` |
 | `CORS_ORIGINS` | 允许的前端来源（逗号分隔） | `http://localhost:5173,http://localhost:4173` |
 | `LOG_LEVEL` | 日志级别 | `INFO` |
+| `AUTH_DB_PATH` | 本地账号与 Token 存储文件 | `backend/data/users.json` |
 
 ---
 
 ## 三、API 接口
 
-所有接口前缀 `/api`，交互式文档见 http://localhost:8000/docs 。
+所有接口前缀 `/api`，交互式文档见 http://localhost:8000/docs 。除 `/api/auth/*` 与 `/api/health` 外，业务接口均需携带 `Authorization: Bearer <token>`。
+
+### 鉴权
+
+| 方法 | 路径 | 入参 | 返回 |
+|------|------|------|------|
+| POST | `/api/auth/register` | `{username, password}` | `{username, token}` |
+| POST | `/api/auth/login` | `{username, password}` | `{username, token}` |
+| GET | `/api/auth/me` | Bearer Token | `{username}` |
+
+账号规则：`username` 至少 5 位且只能包含数字/字母；`password` 必须超过 8 位且只能包含数字、字母和英文符号，不强制三类都存在。
 
 ### 对话
 
@@ -244,8 +257,8 @@ npm run dev                   # 开发服务器 http://localhost:5173
 
 | 方法 | 路径 | 入参 | 返回 |
 |------|------|------|------|
-| GET | `/api/health` | — | `{status, qdrant, neo4j, web_search, counts}` 存活与依赖检查 |
-| GET | `/api/stats` | — | `{qdrant_points, neo4j_entities}` |
+| GET | `/api/health` | 可选 Bearer Token | `{status, qdrant, neo4j, web_search, counts}` 存活与依赖检查；携带有效 Token 时返回当前账号计数 |
+| GET | `/api/stats` | Bearer Token | `{qdrant_points, neo4j_entities}` |
 
 ---
 
@@ -257,7 +270,7 @@ npm run dev                   # 开发服务器 http://localhost:5173
 cd backend
 pip install -r requirements-dev.txt
 
-pytest                                   # 运行全部（173 个）
+pytest                                   # 运行全部（185 个）
 pytest tests/test_graph.py               # 运行单个文件
 pytest -k router                         # 按名称筛选
 pytest --cov=. --cov-report=term-missing # 带覆盖率报告
@@ -351,7 +364,7 @@ docker compose --env-file .env -f docker-compose.yaml down
 ```
 
 - **Neo4j 首次启动需 20–30s**，期间后端日志出现 `Neo4j unavailable at startup` 属正常，DB 就绪后客户端惰性重连自动恢复。
-- **数据持久化**：`qdrant_data`、`neo4j_data` 卷，`make down` 不丢；只有 `docker compose down -v` 才删卷。
+- **数据持久化**：`backend_data` 保存账号库，`qdrant_data` / `neo4j_data` 保存知识库；`make down` 不丢，只有 `docker compose down -v` 才删卷。
 - **SSE 流式**：nginx 已配 `proxy_buffering off` + 300s 超时。
 - **生产 `.env` 注意**：`LLM_API_KEY` 走 `.env` 注入不入库；`CORS_ORIGINS` 同源部署可不改；建议后续在 nginx 前加 HTTPS。
 

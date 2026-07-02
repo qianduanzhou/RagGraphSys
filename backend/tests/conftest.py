@@ -152,41 +152,59 @@ class FakeQdrantClient:
         self.points.extend(points)
         return types.SimpleNamespace(operation_id=1)
 
-    def query_points(self, collection_name: str, query: Any, limit: int, with_payload: bool = True):
-        return types.SimpleNamespace(points=list(self.scored))
+    def query_points(
+        self,
+        collection_name: str,
+        query: Any,
+        limit: int,
+        with_payload: bool = True,
+        query_filter: Any = None,
+    ):
+        points = list(self.scored)
+        if query_filter is not None:
+            points = [p for p in points if self._matches(getattr(p, "payload", {}) or {}, query_filter)]
+        return types.SimpleNamespace(points=points)
 
-    def count(self, collection_name: str, exact: bool = True):
-        return types.SimpleNamespace(count=len(self.points))
+    def count(self, collection_name: str, exact: bool = True, count_filter: Any = None):
+        points = self.points
+        if count_filter is not None:
+            points = [p for p in points if self._matches(getattr(p, "payload", {}) or {}, count_filter)]
+        return types.SimpleNamespace(count=len(points))
 
     def delete(self, collection_name: str, points_selector: Any) -> Any:
-        """模拟按 payload Filter 删除点（仅支持本仓库使用的 must=[FieldCondition] 形态）。"""
-        for cond in getattr(points_selector, "must", []) or []:
-            key = getattr(cond, "key", None)
-            value = getattr(getattr(cond, "match", None), "value", None)
-            kept: List[Any] = []
-            for p in self.points:
-                payload = getattr(p, "payload", {}) or {}
-                if payload.get(key) == value:
-                    continue  # 命中过滤条件 -> 删除
-                kept.append(p)
-            self.points = kept
+        self.points = [
+            p for p in self.points
+            if not self._matches(getattr(p, "payload", {}) or {}, points_selector)
+        ]
         return types.SimpleNamespace(operation_id=1)
 
     def scroll(self, collection_name: str, limit: int = 10, offset: Optional[int] = None,
-               with_payload: bool = True, with_vectors: bool = False):
+               with_payload: bool = True, with_vectors: bool = False, scroll_filter: Any = None):
         """模拟 qdrant_client 的 scroll：返回 (records, next_offset) 元组。
 
         records 每个元素是带 ``id`` / ``payload`` 属性的 SimpleNamespace，
         与真实 :class:`qdrant_client.models.Record` 在本仓库的使用方式一致。
         """
         start = 0 if offset is None else int(offset)
-        batch = self.points[start:start + limit]
+        points = self.points
+        if scroll_filter is not None:
+            points = [p for p in points if self._matches(getattr(p, "payload", {}) or {}, scroll_filter)]
+        batch = points[start:start + limit]
         records = [
             types.SimpleNamespace(id=getattr(p, "id", None), payload=getattr(p, "payload", None))
             for p in batch
         ]
-        next_offset = start + limit if start + limit < len(self.points) else None
+        next_offset = start + limit if start + limit < len(points) else None
         return records, next_offset
+
+    @staticmethod
+    def _matches(payload: dict, qfilter: Any) -> bool:
+        for cond in getattr(qfilter, "must", []) or []:
+            key = getattr(cond, "key", None)
+            value = getattr(getattr(cond, "match", None), "value", None)
+            if payload.get(key) != value:
+                return False
+        return True
 
 
 def scored(payload: dict, score: float) -> types.SimpleNamespace:
@@ -306,12 +324,12 @@ class MockQdrant:
         self.raise_search = raise_search
         self.deleted = deleted
 
-    def search(self, query: str, top_k: Optional[int] = None) -> List[dict]:
+    def search(self, query: str, top_k: Optional[int] = None, owner: Optional[str] = None) -> List[dict]:
         if self.raise_search:
             raise RuntimeError("qdrant down")
         return list(self._hits)
 
-    def delete_by_source(self, source: str) -> int:
+    def delete_by_source(self, source: str, owner: Optional[str] = None) -> int:
         return self.deleted
 
 
@@ -320,7 +338,7 @@ class MockNeo4j:
         self._rels = rels if rels is not None else [{"head": "X", "rel": "RELATES_TO", "tail": "Y"}]
         self.deleted = deleted
 
-    def search(self, entities, limit: int = 5) -> List[dict]:
+    def search(self, entities, limit: int = 5, owner: Optional[str] = None) -> List[dict]:
         return list(self._rels)
 
     def delete_by_source(self, source: str) -> int:

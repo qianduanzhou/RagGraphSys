@@ -9,7 +9,7 @@ class FakeRag:
         self._used = used_rag
         self._raise = raise_build
 
-    def build_context(self, query, top_k=None):
+    def build_context(self, query, top_k=None, owner=None):
         if self._raise:
             raise RuntimeError("rag down")
         return {"context": self._ctx, "sources": list(self._sources), "used_rag": self._used}

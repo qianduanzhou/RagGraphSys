@@ -17,6 +17,9 @@ env/
 backend/logs/
 *.log
 
+# Local account store
+backend/data/
+
 # Frontend
 frontend/node_modules/
 frontend/dist/

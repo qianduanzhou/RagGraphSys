@@ -1,19 +1,33 @@
 import { useCallback, useEffect, useState } from "react";
-import { Eraser } from "lucide-react";
+import { Eraser, LogOut, UserCircle } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
-import { chatStream, deleteDoc, deleteDocsBatch, fetchDocs, fetchHealth, ingestFiles } from "./api/client";
+import AuthPage from "./components/AuthPage";
+import {
+  chatStream,
+  deleteDoc,
+  deleteDocsBatch,
+  fetchCurrentUser,
+  fetchDocs,
+  fetchHealth,
+  ingestFiles,
+  loginAccount,
+  registerAccount,
+  setAuthToken,
+} from "./api/client";
+import { clearSession, loadSession, saveSession } from "./auth-storage";
 import {
   MULTI_AGENT_PIPELINE,
   PIPELINE,
   type BatchIngestResponse,
+  type AuthSession,
   type ChatMessage,
   type ChatMode,
   type HealthResponse,
   type StepStatus,
   type UploadedDoc,
 } from "./types";
-import { buildHistory } from "./chat-history";
+import { buildHistory, clearUserMessages, loadUserMessages, saveUserMessages } from "./chat-history";
 import "./App.css";
 
 const uid = () =>
@@ -28,14 +42,28 @@ const WELCOME: ChatMessage = {
     "**你好，我是 Hybrid RAG 助手。**\n\n我通过 **Qdrant 语义检索** 与 **Neo4j 知识图谱** 双路召回，再由 **大模型** 自动自我反思。\n\n先在左侧上传一份文档建立知识库，然后向我一提问吧。",
 };
 
+const initialSession = loadSession();
+setAuthToken(initialSession?.token ?? null);
+
 export default function App() {
-  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
+  const [session, setSession] = useState<AuthSession | null>(initialSession);
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    initialSession ? loadUserMessages(initialSession.username, [WELCOME]) : [WELCOME]
+  );
   const [streaming, setStreaming] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [docs, setDocs] = useState<UploadedDoc[]>([]);
   // 问答模式与联网搜索可用性（来自后端 health.web_search）。
   const [mode, setMode] = useState<ChatMode>("rag");
   const [webSearchAvailable, setWebSearchAvailable] = useState<boolean>(true);
+
+  const resetSession = useCallback(() => {
+    setAuthToken(null);
+    clearSession();
+    setSession(null);
+    setDocs([]);
+    setMessages([WELCOME]);
+  }, []);
 
   useEffect(() => {
     fetchHealth()
@@ -45,8 +73,16 @@ export default function App() {
       })
       .catch(() => setHealth(null));
     // 拉取已入库文档列表（持久化在后端，刷新后仍可见）。
-    fetchDocs().then(setDocs).catch(() => setDocs([]));
-  }, []);
+    if (!session) {
+      setDocs([]);
+      return;
+    }
+
+    fetchCurrentUser()
+      .then(() => fetchDocs())
+      .then(setDocs)
+      .catch(resetSession);
+  }, [resetSession, session]);
 
   const refreshHealth = useCallback(() => {
     fetchHealth()
@@ -58,8 +94,36 @@ export default function App() {
   }, []);
 
   const refreshDocs = useCallback(() => {
+    if (!session) {
+      setDocs([]);
+      return;
+    }
     fetchDocs().then(setDocs).catch(() => setDocs([]));
-  }, []);
+  }, [session]);
+
+  useEffect(() => {
+    if (session) saveUserMessages(session.username, messages);
+  }, [messages, session]);
+
+  const handleAuth = useCallback(
+    async (authMode: "login" | "register", username: string, password: string) => {
+      const next =
+        authMode === "login"
+          ? await loginAccount(username, password)
+          : await registerAccount(username, password);
+      setAuthToken(next.token);
+      saveSession(next);
+      setSession(next);
+      setMessages(loadUserMessages(next.username, [WELCOME]));
+      setDocs([]);
+      refreshHealth();
+    },
+    [refreshHealth]
+  );
+
+  const handleLogout = useCallback(() => {
+    resetSession();
+  }, [resetSession]);
 
   const handleSend = useCallback(
     async (text: string) => {
@@ -199,8 +263,13 @@ export default function App() {
   );
 
   const handleClear = useCallback(() => {
+    if (session) clearUserMessages(session.username);
     setMessages([WELCOME]);
-  }, []);
+  }, [session]);
+
+  if (!session) {
+    return <AuthPage onSubmit={handleAuth} />;
+  }
 
   return (
     <div className="app-shell">
@@ -221,14 +290,27 @@ export default function App() {
               <span className="dot-accent" /> llm · embedding
             </span>
           </div>
-          <button
-            className="ghost-btn"
-            onClick={handleClear}
-            title="清空对话"
-            disabled={streaming}
-          >
-            <Eraser size={15} /> 清空
-          </button>
+          <div className="topbar-actions">
+            <span className="user-chip">
+              <UserCircle size={15} /> {session.username}
+            </span>
+            <button
+              className="ghost-btn"
+              onClick={handleClear}
+              title="清空对话"
+              disabled={streaming}
+            >
+              <Eraser size={15} /> 清空
+            </button>
+            <button
+              className="ghost-btn"
+              onClick={handleLogout}
+              title="退出登录"
+              disabled={streaming}
+            >
+              <LogOut size={15} /> 退出
+            </button>
+          </div>
         </header>
 
         <ChatWindow

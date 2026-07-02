@@ -38,7 +38,7 @@ def test_search_empty_when_no_query():
 
 
 def test_unavailable_when_no_key_and_no_client():
-    svc = WebSearchService(Settings())  # 无 key、无注入 client
+    svc = WebSearchService(Settings(tavily_api_key=""))  # 无 key、无注入 client
     assert svc.available is False
     assert svc.search("q") == []
 

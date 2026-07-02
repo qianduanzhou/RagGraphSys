@@ -41,6 +41,7 @@ class GraphState(TypedDict, total=False):
     reflection_feedback: str
     iterations: int
     streaming: bool
+    owner: str
 
 
 class GraphNodes:
@@ -74,7 +75,11 @@ class GraphNodes:
     # ------------------------------------------------------------------ #
     def qdrant(self, state: GraphState) -> Dict[str, Any]:
         try:
-            results = self.rag.qdrant.search(state["question"], self.settings.qdrant_top_k)
+            results = self.rag.qdrant.search(
+                state["question"],
+                self.settings.qdrant_top_k,
+                owner=state.get("owner"),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("qdrant_node failed: %s", exc)
             results = []
@@ -87,7 +92,11 @@ class GraphNodes:
     def neo4j(self, state: GraphState) -> Dict[str, Any]:
         try:
             keywords = self.llm.extract_keywords(state["question"]) or [state["question"][:32]]
-            results = self.rag.neo4j.search(keywords, limit=self.settings.qdrant_top_k)
+            results = self.rag.neo4j.search(
+                keywords,
+                limit=self.settings.qdrant_top_k,
+                owner=state.get("owner"),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("neo4j_node failed: %s", exc)
             results = []

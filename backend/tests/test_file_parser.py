@@ -44,6 +44,32 @@ def test_parse_pdf(monkeypatch):
     assert ".pdf" in ALLOWED_EXTS
 
 
+def test_parse_pdf_expands_merged_table_notes(monkeypatch):
+    note = "\u9002\u5e94\u9ad8\u7a7a\u4f5c\u4e1a\u3002"
+    header = "\u5c0f\u8ba1 30"
+    footer = "\u5c0f\u8ba1 80"
+    text = (
+        f"{header} "
+        "62 G2026020701 Guangzhou power supply maintenance Guangdong 34 "
+        f"{note} "
+        "63 G2026020702 Shenzhen power supply maintenance Guangdong 10 "
+        "64 G2026020703 Huizhou power supply maintenance Guangdong 4 "
+        f"{footer}"
+    )
+    fake_page = types.SimpleNamespace(extract_text=lambda: text)
+    fake_reader = lambda stream: types.SimpleNamespace(pages=[fake_page])
+    fake_mod = types.ModuleType("pypdf")
+    fake_mod.PdfReader = fake_reader
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_mod)
+
+    parsed = parse_upload("jobs.pdf", b"%PDF- fake")
+
+    assert "\u3010PDF\u8868\u683c\u5408\u5e76\u5907\u6ce8\u5c55\u5f00\u3011" in parsed
+    assert parsed.count(f"\u5907\u6ce8\uff1a{note}") == 3
+    assert "G2026020702" in parsed
+    assert "G2026020703" in parsed
+
+
 def test_parse_pdf_missing_lib(monkeypatch):
     # 未装 pypdf 时给出可读错误
     import sys
@@ -145,7 +171,7 @@ def test_parse_xls_renders_table():
 # 错误路径
 # ------------------------------------------------------------------ #
 def test_parse_unsupported_type():
-    with pytest.raises(ValueError, match="unsupported"):
+    with pytest.raises(ValueError, match="不支持的文件类型"):
         parse_upload("program.exe", b"MZ")
 
 

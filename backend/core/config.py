@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     app_port: int = 8000
     cors_origins: str = "http://localhost:5173,http://localhost:4173"
     log_level: str = "INFO"
+    auth_db_path: str = str(BASE_DIR / "data" / "users.json")
 
     @property
     def cors_origins_list(self) -> list[str]:

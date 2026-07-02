@@ -125,7 +125,12 @@ class Neo4jStore:
     # ------------------------------------------------------------------ #
     # 读取
     # ------------------------------------------------------------------ #
-    def search(self, entities: Sequence[str], limit: int = 5) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        entities: Sequence[str],
+        limit: int = 5,
+        owner: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """返回从给定实体关键词可达的一跳关系。"""
         entities = [e for e in entities if e]
         if not entities:
@@ -138,13 +143,15 @@ class Neo4jStore:
             "MATCH (a)-[r]-(b) "
             "WITH a, r, b "
             "WHERE a.name <> b.name "
+            "  AND ($owner_prefix IS NULL OR ANY(s IN coalesce(r.sources, []) WHERE s STARTS WITH $owner_prefix)) "
             "RETURN a.name AS head, type(r) AS rel, b.name AS tail "
             "LIMIT toInteger($limit)"
         )
+        owner_prefix = f"{owner}::" if owner else None
         seen = set()
         results: List[Dict[str, Any]] = []
         with self.driver.session() as session:
-            records = session.run(cypher, entities=list(entities), limit=limit)
+            records = session.run(cypher, entities=list(entities), limit=limit, owner_prefix=owner_prefix)
             for record in records:
                 key = (record["head"], record["rel"], record["tail"])
                 if key in seen:
@@ -154,7 +161,17 @@ class Neo4jStore:
         logger.info("Neo4j search returned %d relations for entities=%s", len(results), entities)
         return results
 
-    def count_entities(self) -> int:
+    def count_entities(self, owner: Optional[str] = None) -> int:
         with self.driver.session() as session:
-            record = session.run("MATCH (n:Entity) RETURN count(n) AS c").single()
+            if owner:
+                record = session.run(
+                    "MATCH (a)-[r]-(b) "
+                    "WHERE ANY(s IN coalesce(r.sources, []) WHERE s STARTS WITH $owner_prefix) "
+                    "WITH collect(DISTINCT a) + collect(DISTINCT b) AS nodes "
+                    "UNWIND nodes AS n "
+                    "RETURN count(DISTINCT n) AS c",
+                    owner_prefix=f"{owner}::",
+                ).single()
+            else:
+                record = session.run("MATCH (n:Entity) RETURN count(n) AS c").single()
             return record["c"] if record else 0

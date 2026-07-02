@@ -60,6 +60,11 @@ def test_count_entities(settings):
     assert store.count_entities() == 42
 
 
+def test_count_entities_scopes_owner(settings):
+    store = make_store(settings, FakeSession(records=[{"c": 3}]))
+    assert store.count_entities(owner="alice") == 3
+
+
 def test_add_knowledge_tags_source(settings):
     tx = FakeTx()
     store = make_store(settings, FakeSession(tx=tx))

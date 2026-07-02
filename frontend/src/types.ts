@@ -145,3 +145,10 @@ export interface UploadedDoc {
   triples: number;
   at: number;
 }
+
+export interface AuthSession {
+  username: string;
+  token: string;
+}
+
+export type AuthResponse = AuthSession;

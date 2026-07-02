@@ -75,46 +75,57 @@ class RagService:
         self.llm = llm
         self.settings = settings
 
+    @staticmethod
+    def _source_key(source: str, owner: str | None = None) -> str:
+        return f"{owner}::{source}" if owner else source
+
     # ------------------------------------------------------------------ #
     # 导入
     # ------------------------------------------------------------------ #
-    def ingest_text(self, text: str, source: str = "manual") -> Dict[str, int]:
+    def ingest_text(
+        self,
+        text: str,
+        source: str = "manual",
+        owner: str | None = None,
+    ) -> Dict[str, int]:
         """对文本分块后写入 Qdrant，并抽取三元组写入 Neo4j。"""
         text = (text or "").strip()
         if not text:
-            raise ValueError("cannot ingest empty text")
+            raise ValueError("入库文本不能为空")
 
         chunks = split_text(text, self.settings.chunk_size, self.settings.chunk_overlap)
         # 记录入库时间戳，供 /docs 聚合展示与排序（刷新界面后仍可长期看到）。
         created_at = int(time.time())
-        metadatas = [
-            {"source": source, "chunk_index": i, "char_len": len(c), "created_at": created_at}
-            for i, c in enumerate(chunks)
-        ]
+        metadatas = []
+        for i, chunk in enumerate(chunks):
+            meta = {"source": source, "chunk_index": i, "char_len": len(chunk), "created_at": created_at}
+            if owner:
+                meta["owner"] = owner
+            metadatas.append(meta)
         upserted = self.qdrant.upsert(chunks, metadatas)
 
         # 从文档开头部分抽取图谱（控制成本）。传入 source 便于按文档删除。
         triples = self.llm.extract_graph("\n\n".join(chunks[:6]))
         merged = self.neo4j.add_knowledge(
             [(t["head"], t["rel"], t["tail"]) for t in triples],
-            source=source,
+            source=self._source_key(source, owner),
         )
 
         logger.info("Ingested '%s': %d chunks, %d triples", source, upserted, merged)
         return {"chunks": upserted, "triples": merged}
 
-    def delete_document(self, source: str) -> Dict[str, Any]:
+    def delete_document(self, source: str, owner: str | None = None) -> Dict[str, Any]:
         """删除某来源文档：清除其在 Qdrant 的全部分片与 Neo4j 的图谱关系。
 
         Neo4j 清理依赖关系上的来源标记（见 :meth:`add_knowledge`），历史数据可能
         无法精确清理，但 Qdrant 分片一定会删除——问答检索不再命中该文档。
         """
-        chunks = self.qdrant.delete_by_source(source)
-        relations = self.neo4j.delete_by_source(source)
+        chunks = self.qdrant.delete_by_source(source, owner=owner)
+        relations = self.neo4j.delete_by_source(self._source_key(source, owner))
         logger.info("Deleted document '%s': %d chunks, %d relations", source, chunks, relations)
         return {"source": source, "chunks": chunks, "relations": relations}
 
-    def delete_documents(self, sources: List[str]) -> Dict[str, Any]:
+    def delete_documents(self, sources: List[str], owner: str | None = None) -> Dict[str, Any]:
         """批量删除多个来源文档：逐个调用 :meth:`delete_document`，单项失败不中断整批。
 
         返回逐项明细 + 聚合计数（结构与批量导入 ``ingest_files`` 对齐），便于前端
@@ -126,7 +137,7 @@ class RagService:
         deleted = failed = 0
         for source in sources:
             try:
-                stats = self.delete_document(source)
+                stats = self.delete_document(source, owner=owner)
                 results.append({
                     "source": source,
                     "chunks": stats["chunks"],
@@ -148,40 +159,55 @@ class RagService:
             "results": results,
         }
 
-    def ingest_file(self, path: str | Path, encoding: str = "utf-8") -> Dict[str, int]:
+    def ingest_file(
+        self,
+        path: str | Path,
+        encoding: str = "utf-8",
+        owner: str | None = None,
+    ) -> Dict[str, int]:
         file_path = Path(path)
         text = file_path.read_text(encoding=encoding)
-        return self.ingest_text(text, source=file_path.name)
+        return self.ingest_text(text, source=file_path.name, owner=owner)
 
     # ------------------------------------------------------------------ #
     # 检索（混合）
     # ------------------------------------------------------------------ #
-    def retrieve(self, query: str, top_k: int | None = None) -> Dict[str, List[Dict[str, Any]]]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int | None = None,
+        owner: str | None = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """独立执行向量检索与图谱检索，并同时返回两者结果。"""
         limit = top_k or self.settings.qdrant_top_k
 
         vector_hits: List[Dict[str, Any]] = []
         graph_hits: List[Dict[str, Any]] = []
         try:
-            vector_hits = self.qdrant.search(query, top_k=limit)
+            vector_hits = self.qdrant.search(query, top_k=limit, owner=owner)
         except Exception as exc:  # noqa: BLE001 - retrieval must degrade gracefully
             logger.exception("Qdrant retrieval failed: %s", exc)
 
         try:
             keywords = self.llm.extract_keywords(query) or [query[:32]]
-            graph_hits = self.neo4j.search(keywords, limit=limit)
+            graph_hits = self.neo4j.search(keywords, limit=limit, owner=owner)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Neo4j retrieval failed: %s", exc)
 
         return {"qdrant": vector_hits, "neo4j": graph_hits}
 
-    def build_context(self, query: str, top_k: int | None = None) -> Dict[str, Any]:
+    def build_context(
+        self,
+        query: str,
+        top_k: int | None = None,
+        owner: str | None = None,
+    ) -> Dict[str, Any]:
         """执行混合检索，随后合并为上下文字符串和来源列表。
 
         对应 LangGraph 中 router->qdrant/neo4j->merge 的路径，使流式接口
         在开始流式生成前可以复用相同的检索逻辑。
         """
-        retrieved = self.retrieve(query, top_k=top_k)
+        retrieved = self.retrieve(query, top_k=top_k, owner=owner)
         context, sources = merge_results(
             retrieved["qdrant"],
             retrieved["neo4j"],

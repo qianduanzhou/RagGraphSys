@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import main
 from api import _sse, _summarize_update
+from services.auth_service import AuthService
 
 
 # --------------------------------------------------------------------------- #
@@ -51,8 +52,12 @@ def test_summarize_non_dict_is_empty():
 # TestClient 集成（应用以降级模式启动；graph 被替换为 mock）
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-def client():
+def client(tmp_path):
     with TestClient(main.app) as c:
+        auth = AuthService(tmp_path / "users.json")
+        session = auth.register("testuser", "password123!")
+        main.app.state.auth = auth
+        c.headers.update({"Authorization": f"Bearer {session['token']}"})
         yield c
 
 
@@ -62,6 +67,11 @@ def test_health_degraded(client):
     body = r.json()
     assert body["status"] in ("ok", "degraded")
     assert "qdrant" in body and "neo4j" in body
+
+
+def test_docs_requires_auth(client):
+    r = client.get("/api/docs", headers={"Authorization": ""})
+    assert r.status_code == 401
 
 
 def test_chat_with_mock_graph(client):
@@ -119,7 +129,7 @@ def test_chat_stream_rejects_when_uninitialised(client):
 def test_list_docs_aggregates_by_source(client):
     """已入库文档按 source 聚合，分片数累加、时间戳取最大值。"""
     class _Qdrant:
-        def scan_all(self):
+        def scan_all(self, owner=None):
             return [
                 {"id": 1, "payload": {"source": "a.txt", "created_at": 100}},
                 {"id": 2, "payload": {"source": "a.txt", "created_at": 200}},
@@ -127,7 +137,7 @@ def test_list_docs_aggregates_by_source(client):
             ]
 
     class _Neo4j:
-        def count_entities(self):
+        def count_entities(self, owner=None):
             return 7
 
     class _Rag:
@@ -154,7 +164,7 @@ def test_ingest_files_rejects_empty(client):
 
 def test_delete_doc_endpoint(client):
     class _Rag:
-        def delete_document(self, source):
+        def delete_document(self, source, owner=None):
             return {"source": source, "chunks": 5, "relations": 2}
 
     main.app.state.rag = _Rag()
@@ -176,7 +186,7 @@ def test_delete_doc_rejects_empty_source(client):
 def test_delete_docs_batch_success(client):
     """全成功：status=ok，deleted 计数正确，逐项返回 chunks/relations。"""
     class _Rag:
-        def delete_documents(self, sources):
+        def delete_documents(self, sources, owner=None):
             return {
                 "status": "ok",
                 "deleted": len(sources),
@@ -200,7 +210,7 @@ def test_delete_docs_batch_success(client):
 def test_delete_docs_batch_partial_failure(client):
     """部分失败：status=partial，整批不中断，失败项带 error。"""
     class _Rag:
-        def delete_documents(self, sources):
+        def delete_documents(self, sources, owner=None):
             results = []
             for s in sources:
                 if s == "bad.md":
@@ -239,7 +249,7 @@ def test_ingest_file_parses_code_file(client):
     captured = {}
 
     class _Rag:
-        def ingest_text(self, text, source="manual"):
+        def ingest_text(self, text, source="manual", owner=None):
             captured["text"] = text
             captured["source"] = source
             return {"chunks": 1, "triples": 0}
@@ -268,7 +278,7 @@ def test_ingest_files_accepts_multiple_types(client):
     sources = []
 
     class _Rag:
-        def ingest_text(self, text, source="manual"):
+        def ingest_text(self, text, source="manual", owner=None):
             sources.append((source, text))
             return {"chunks": 1, "triples": 0}
 
@@ -301,7 +311,7 @@ def test_ingest_files_unpacks_zip_members(client):
     sources = []
 
     class _Rag:
-        def ingest_text(self, text, source="manual"):
+        def ingest_text(self, text, source="manual", owner=None):
             sources.append((source, text))
             return {"chunks": 1, "triples": 0}
 

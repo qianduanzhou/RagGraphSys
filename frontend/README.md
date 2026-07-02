@@ -1,6 +1,6 @@
 ﻿# 前端服务（Frontend）
 
-React 18 + Vite + TypeScript 前端，ChatGPT 风格对话界面，支持 SSE 流式逐字输出、实时流水线进度与文档库管理。
+React 18 + Vite + TypeScript 前端，ChatGPT 风格对话界面，支持登录/注册、SSE 流式逐字输出、实时流水线进度与按账号隔离的文档库管理。
 
 ## 一、本地开发
 
