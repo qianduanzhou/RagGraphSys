@@ -125,3 +125,122 @@ def test_owner_filter_scopes_scan_count_and_delete(settings):
     assert store.delete_by_source("same.txt", owner="alice") == 2
     assert store.count(owner="alice") == 0
     assert store.count(owner="bob") == 1
+
+
+# --- scroll_by_source（整文档拉取，用于聚合查询）---
+def _upsert_chunk(store, source, chunk_index, text, owner=None):
+    meta = {"source": source, "chunk_index": chunk_index}
+    if owner:
+        meta["owner"] = owner
+    store.upsert([text], metadatas=[meta])
+
+
+def test_scroll_by_source_returns_ordered_by_chunk_index(settings):
+    store = make_store(settings)
+    # 故意乱序写入
+    for idx, t in [(3, "c3"), (0, "c0"), (1, "c1"), (2, "c2")]:
+        _upsert_chunk(store, "d.txt", idx, t)
+
+    out = store.scroll_by_source("d.txt")
+    assert [h["text"] for h in out] == ["c0", "c1", "c2", "c3"]
+
+
+def test_scroll_by_source_search_shaped_with_none_score(settings):
+    store = make_store(settings)
+    _upsert_chunk(store, "d.txt", 0, "片段")
+    out = store.scroll_by_source("d.txt")
+    assert len(out) == 1
+    hit = out[0]
+    assert set(hit.keys()) >= {"text", "score", "source", "payload"}
+    assert hit["score"] is None
+    assert hit["source"] == "d.txt"
+    assert hit["text"] == "片段"
+
+
+def test_scroll_by_source_filters_by_source_and_owner(settings):
+    store = make_store(settings)
+    _upsert_chunk(store, "a.txt", 0, "a0", owner="alice")
+    _upsert_chunk(store, "a.txt", 1, "a1", owner="alice")
+    _upsert_chunk(store, "a.txt", 0, "a0-bob", owner="bob")
+    _upsert_chunk(store, "b.txt", 0, "b0", owner="alice")
+
+    out = store.scroll_by_source("a.txt", owner="alice")
+    assert [h["text"] for h in out] == ["a0", "a1"]
+
+
+def test_scroll_by_source_respects_limit(settings):
+    store = make_store(settings)
+    for i in range(10):
+        _upsert_chunk(store, "d.txt", i, f"c{i}")
+    out = store.scroll_by_source("d.txt", limit=3)
+    assert [h["text"] for h in out] == ["c0", "c1", "c2"]
+
+
+def test_scroll_by_source_missing_chunk_index_falls_back(settings):
+    # 缺 chunk_index 的历史分片不崩，按 0 退位、保持插入序
+    store = make_store(settings)
+    store.upsert(["x", "y"], metadatas=[{"source": "d.txt"}, {"source": "d.txt"}])
+    out = store.scroll_by_source("d.txt")
+    assert [h["text"] for h in out] == ["x", "y"]
+
+
+def test_scroll_by_source_empty(settings):
+    store = make_store(settings)
+    assert store.scroll_by_source("missing.txt") == []
+
+
+# --- conversation_id 隔离（多对话）---
+def test_search_filters_by_conversation(settings):
+    store = make_store(settings)
+    store.client.scored = [
+        scored({"text": "a", "source": "d", "conversation_id": "c1"}, 0.9),
+        scored({"text": "b", "source": "d", "conversation_id": "c2"}, 0.9),
+    ]
+    out = store.search("q", top_k=5, conversation_id="c1")
+    assert [h["text"] for h in out] == ["a"]
+
+
+def test_scroll_by_source_filters_by_conversation(settings):
+    store = make_store(settings)
+    store.upsert(["a"], metadatas=[{"source": "d.txt", "chunk_index": 0, "conversation_id": "c1"}])
+    store.upsert(["b"], metadatas=[{"source": "d.txt", "chunk_index": 0, "conversation_id": "c2"}])
+    assert [h["text"] for h in store.scroll_by_source("d.txt", conversation_id="c1")] == ["a"]
+
+
+def test_delete_by_source_scoped_to_conversation(settings):
+    store = make_store(settings)
+    store.upsert(
+        ["a1", "a2"],
+        metadatas=[
+            {"source": "d.txt", "chunk_index": 0, "conversation_id": "c1"},
+            {"source": "d.txt", "chunk_index": 1, "conversation_id": "c2"},
+        ],
+    )
+    assert store.delete_by_source("d.txt", conversation_id="c1") == 1
+    remaining = [p.payload["conversation_id"] for p in store.client.points]
+    assert remaining == ["c2"]
+
+
+def test_delete_by_conversation_clears_only_that_conv(settings):
+    store = make_store(settings)
+    store.upsert(
+        ["a", "b", "c"],
+        metadatas=[
+            {"source": "d1", "conversation_id": "c1"},
+            {"source": "d2", "conversation_id": "c1"},
+            {"source": "d3", "conversation_id": "c2"},
+        ],
+    )
+    assert store.delete_by_conversation(owner=None, conversation_id="c1") == 2
+    assert [p.payload["conversation_id"] for p in store.client.points] == ["c2"]
+
+
+def test_search_without_conversation_id_no_filter(settings):
+    # conversation_id=None 时不加过滤，兼容旧行为
+    store = make_store(settings)
+    store.client.scored = [
+        scored({"text": "a", "source": "d", "conversation_id": "c1"}, 0.9),
+        scored({"text": "b", "source": "d", "conversation_id": "c2"}, 0.8),
+    ]
+    out = store.search("q", top_k=5)
+    assert len(out) == 2

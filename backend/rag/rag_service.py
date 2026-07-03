@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from core.config import Settings
 from core.logger import get_logger
-from core.utils import split_text
+from core.utils import is_aggregate_query, split_text
 from rag.neo4j_store import Neo4jStore
 from rag.qdrant_store import QdrantStore
 from services.llm_service import LLMService
@@ -32,9 +33,15 @@ def merge_results(
 
     ``score_threshold``（cosine 相似度，默认 0.0 即不过滤）会丢弃低于阈值的
     向量命中，避免无关结果污染上下文；Neo4j 关系为关键词精确命中、不带分数，不参与过滤。
+
+    ``score is None`` 视为「无相似度、整文档拉取」的分片（见
+    :meth:`RagService.resolve_vector_hits`），无条件放行阈值过滤。
     """
-    # 相关度过滤：仅保留达到阈值的向量命中
-    qdrant_hits = [h for h in qdrant_hits if float(h.get("score", 0.0)) >= score_threshold]
+    # 相关度过滤：仅保留达到阈值的向量命中；score=None（整文档拉取）放行
+    qdrant_hits = [
+        h for h in qdrant_hits
+        if h.get("score") is None or float(h.get("score", 0.0)) >= score_threshold
+    ]
 
     parts: List[str] = []
     sources: List[Dict[str, Any]] = []
@@ -42,7 +49,9 @@ def merge_results(
     if qdrant_hits:
         parts.append("【向量检索结果 / Qdrant】")
         for i, hit in enumerate(qdrant_hits, 1):
-            parts.append(f"[V{i}] (score={hit.get('score', 0):.3f}, src={hit.get('source')}) {hit['text']}")
+            score = hit.get("score")
+            score_str = "n/a" if score is None else f"{float(score):.3f}"
+            parts.append(f"[V{i}] (score={score_str}, src={hit.get('source')}) {hit['text']}")
             sources.append(
                 {
                     "type": "qdrant",
@@ -76,8 +85,16 @@ class RagService:
         self.settings = settings
 
     @staticmethod
-    def _source_key(source: str, owner: str | None = None) -> str:
-        return f"{owner}::{source}" if owner else source
+    def _source_key(source: str, owner: str | None = None, conversation_id: str | None = None) -> str:
+        # Neo4j 来源标记：owner::conversation_id::source（缺省维度省略）。
+        # 旧的 owner::source 是其前缀，故 owner 维度过滤仍兼容；对话维度进一步收窄。
+        parts: List[str] = []
+        if owner:
+            parts.append(owner)
+        if conversation_id:
+            parts.append(conversation_id)
+        parts.append(source)
+        return "::".join(parts)
 
     # ------------------------------------------------------------------ #
     # 导入
@@ -87,8 +104,12 @@ class RagService:
         text: str,
         source: str = "manual",
         owner: str | None = None,
+        conversation_id: str | None = None,
     ) -> Dict[str, int]:
-        """对文本分块后写入 Qdrant，并抽取三元组写入 Neo4j。"""
+        """对文本分块后写入 Qdrant，并抽取三元组写入 Neo4j。
+
+        ``conversation_id`` 非 None 时，分片与三元组都打上对话标记，检索/删除按对话隔离。
+        """
         text = (text or "").strip()
         if not text:
             raise ValueError("入库文本不能为空")
@@ -101,31 +122,44 @@ class RagService:
             meta = {"source": source, "chunk_index": i, "char_len": len(chunk), "created_at": created_at}
             if owner:
                 meta["owner"] = owner
+            if conversation_id:
+                meta["conversation_id"] = conversation_id
             metadatas.append(meta)
         upserted = self.qdrant.upsert(chunks, metadatas)
 
-        # 从文档开头部分抽取图谱（控制成本）。传入 source 便于按文档删除。
+        # 从文档开头部分抽取图谱（控制成本）。传入 source 便于按文档/对话删除。
         triples = self.llm.extract_graph("\n\n".join(chunks[:6]))
         merged = self.neo4j.add_knowledge(
             [(t["head"], t["rel"], t["tail"]) for t in triples],
-            source=self._source_key(source, owner),
+            source=self._source_key(source, owner, conversation_id),
         )
 
-        logger.info("Ingested '%s': %d chunks, %d triples", source, upserted, merged)
+        logger.info("Ingested '%s': %d chunks, %d triples (conv=%s)", source, upserted, merged, conversation_id)
         return {"chunks": upserted, "triples": merged}
 
-    def delete_document(self, source: str, owner: str | None = None) -> Dict[str, Any]:
+    def delete_document(
+        self,
+        source: str,
+        owner: str | None = None,
+        conversation_id: str | None = None,
+    ) -> Dict[str, Any]:
         """删除某来源文档：清除其在 Qdrant 的全部分片与 Neo4j 的图谱关系。
 
+        ``conversation_id`` 非 None 时仅在指定对话内删除（同名文件跨对话不串）。
         Neo4j 清理依赖关系上的来源标记（见 :meth:`add_knowledge`），历史数据可能
         无法精确清理，但 Qdrant 分片一定会删除——问答检索不再命中该文档。
         """
-        chunks = self.qdrant.delete_by_source(source, owner=owner)
-        relations = self.neo4j.delete_by_source(self._source_key(source, owner))
+        chunks = self.qdrant.delete_by_source(source, owner=owner, conversation_id=conversation_id)
+        relations = self.neo4j.delete_by_source(self._source_key(source, owner, conversation_id))
         logger.info("Deleted document '%s': %d chunks, %d relations", source, chunks, relations)
         return {"source": source, "chunks": chunks, "relations": relations}
 
-    def delete_documents(self, sources: List[str], owner: str | None = None) -> Dict[str, Any]:
+    def delete_documents(
+        self,
+        sources: List[str],
+        owner: str | None = None,
+        conversation_id: str | None = None,
+    ) -> Dict[str, Any]:
         """批量删除多个来源文档：逐个调用 :meth:`delete_document`，单项失败不中断整批。
 
         返回逐项明细 + 聚合计数（结构与批量导入 ``ingest_files`` 对齐），便于前端
@@ -137,7 +171,7 @@ class RagService:
         deleted = failed = 0
         for source in sources:
             try:
-                stats = self.delete_document(source, owner=owner)
+                stats = self.delete_document(source, owner=owner, conversation_id=conversation_id)
                 results.append({
                     "source": source,
                     "chunks": stats["chunks"],
@@ -159,60 +193,133 @@ class RagService:
             "results": results,
         }
 
+    def delete_conversation(self, owner: str | None, conversation_id: str) -> Dict[str, Any]:
+        """删除某对话的全部知识：Qdrant 分片 + Neo4j 图谱关系。返回各自清理计数。"""
+        chunks = self.qdrant.delete_by_conversation(owner, conversation_id)
+        relations = self.neo4j.delete_by_conversation(owner, conversation_id)
+        logger.info("Deleted conversation: %d chunks, %d relations", chunks, relations)
+        return {"chunks": chunks, "relations": relations}
+
     def ingest_file(
         self,
         path: str | Path,
         encoding: str = "utf-8",
         owner: str | None = None,
+        conversation_id: str | None = None,
     ) -> Dict[str, int]:
         file_path = Path(path)
         text = file_path.read_text(encoding=encoding)
-        return self.ingest_text(text, source=file_path.name, owner=owner)
+        return self.ingest_text(text, source=file_path.name, owner=owner, conversation_id=conversation_id)
 
     # ------------------------------------------------------------------ #
     # 检索（混合）
     # ------------------------------------------------------------------ #
+    def resolve_vector_hits(
+        self,
+        question: str,
+        vector_hits: List[Dict[str, Any]],
+        owner: str | None = None,
+        conversation_id: str | None = None,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """聚合型查询的整文档拉取入口（主图 ``merge_node`` 与 ``build_context`` 共用）。
+
+        满足三重门槛时，用「主导命中文档」的 source 拉取其全部分片，替换原向量命中：
+          1. 聚合关键词命中（:func:`is_aggregate_query`）；
+          2. 相关度达标：命中里至少 1 条 ``score >= qdrant_score_threshold``
+             （挡掉「所有…」式闲聊误触发）；
+          3. 单一文档占主导：达标命中里同一 source 严格过半（``> len/2``），
+             多文档场景下避免锁定到只蹭到零星命中的大文档。
+
+        返回 ``(hits, aggregate_flag)``；任一门槛不满足则原样返回、flag=False。
+        """
+        if not is_aggregate_query(question or "") or not vector_hits:
+            return vector_hits, False
+
+        threshold = self.settings.qdrant_score_threshold
+        high_scored = [
+            h for h in vector_hits
+            if h.get("score") is not None and float(h["score"]) >= threshold
+        ]
+        if not high_scored:
+            return vector_hits, False
+
+        source_counts = Counter(h.get("source") or "unknown" for h in high_scored)
+        dominant_source, top_count = source_counts.most_common(1)[0]
+        # 严格过半（> len/2），且至少 1 条
+        min_dominant = max(1, len(high_scored) // 2 + 1)
+        if top_count < min_dominant:
+            return vector_hits, False
+
+        full = self.qdrant.scroll_by_source(
+            dominant_source,
+            owner=owner,
+            conversation_id=conversation_id,
+            limit=self.settings.rag_aggregate_max_chunks,
+        )
+        if not full:
+            return vector_hits, False
+
+        logger.info(
+            "aggregate retrieval: source=%s, %d chunks pulled (was %d hits)",
+            dominant_source, len(full), len(vector_hits),
+        )
+        return full, True
+
     def retrieve(
         self,
         query: str,
         top_k: int | None = None,
         owner: str | None = None,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """独立执行向量检索与图谱检索，并同时返回两者结果。"""
+        conversation_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """独立执行向量检索与图谱检索，并同时返回两者结果。
+
+        对聚合型查询，向量命中会经 :meth:`resolve_vector_hits` 改写为整文档分片，
+        并在返回值中带 ``aggregate`` 标志。``conversation_id`` 非 None 时按对话隔离检索。
+        """
         limit = top_k or self.settings.qdrant_top_k
 
         vector_hits: List[Dict[str, Any]] = []
         graph_hits: List[Dict[str, Any]] = []
         try:
-            vector_hits = self.qdrant.search(query, top_k=limit, owner=owner)
+            vector_hits = self.qdrant.search(query, top_k=limit, owner=owner, conversation_id=conversation_id)
         except Exception as exc:  # noqa: BLE001 - retrieval must degrade gracefully
             logger.exception("Qdrant retrieval failed: %s", exc)
 
+        # 聚合型查询：必要时改走整文档拉取
+        vector_hits, aggregate = self.resolve_vector_hits(
+            query, vector_hits, owner=owner, conversation_id=conversation_id
+        )
+
         try:
             keywords = self.llm.extract_keywords(query) or [query[:32]]
-            graph_hits = self.neo4j.search(keywords, limit=limit, owner=owner)
+            graph_hits = self.neo4j.search(keywords, limit=limit, owner=owner, conversation_id=conversation_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Neo4j retrieval failed: %s", exc)
 
-        return {"qdrant": vector_hits, "neo4j": graph_hits}
+        return {"qdrant": vector_hits, "neo4j": graph_hits, "aggregate": aggregate}
 
     def build_context(
         self,
         query: str,
         top_k: int | None = None,
         owner: str | None = None,
+        conversation_id: str | None = None,
     ) -> Dict[str, Any]:
         """执行混合检索，随后合并为上下文字符串和来源列表。
 
         对应 LangGraph 中 router->qdrant/neo4j->merge 的路径，使流式接口
-        在开始流式生成前可以复用相同的检索逻辑。
+        在开始流式生成前可以复用相同的检索逻辑。返回值含 ``aggregate`` 标志，
+        供调用方（如多智能体）据此放宽输出 token 上限。``conversation_id`` 非 None
+        时按对话隔离检索。
         """
-        retrieved = self.retrieve(query, top_k=top_k, owner=owner)
+        retrieved = self.retrieve(query, top_k=top_k, owner=owner, conversation_id=conversation_id)
         context, sources = merge_results(
             retrieved["qdrant"],
             retrieved["neo4j"],
             score_threshold=self.settings.qdrant_score_threshold,
         )
         used_rag = bool(sources)
-        logger.info("build_context: %d sources, used_rag=%s", len(sources), used_rag)
-        return {"context": context, "sources": sources, "used_rag": used_rag}
+        aggregate = bool(retrieved.get("aggregate", False))
+        logger.info("build_context: %d sources, used_rag=%s, aggregate=%s", len(sources), used_rag, aggregate)
+        return {"context": context, "sources": sources, "used_rag": used_rag, "aggregate": aggregate}

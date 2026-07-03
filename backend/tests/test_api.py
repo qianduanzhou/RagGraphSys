@@ -53,12 +53,21 @@ def test_summarize_non_dict_is_empty():
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def client(tmp_path):
+    from services.conversation_service import ConversationService
     with TestClient(main.app) as c:
         auth = AuthService(tmp_path / "users.json")
         session = auth.register("testuser", "password123!")
         main.app.state.auth = auth
+        main.app.state.conversations = ConversationService(tmp_path / "conversations.json")
         c.headers.update({"Authorization": f"Bearer {session['token']}"})
         yield c
+
+
+def _bob_headers(client) -> dict:
+    """注册第二用户 bob 并返回其鉴权头（与 client 共享同一 auth/conversations 实例）。"""
+    auth = main.app.state.auth
+    session = auth.register("bob12345", "password123!")
+    return {"Authorization": f"Bearer {session['token']}"}
 
 
 def test_health_degraded(client):
@@ -429,3 +438,136 @@ def test_chat_stream_multi_emits_agent_nodes(client):
     rag = next(f for f in frames if f.get("node") == "rag_agent_node")
     assert rag["update"]["answer"] == "RA"
     assert frames[-1]["type"] == "done"
+
+
+# --------------------------------------------------------------------------- #
+# 对话管理（CRUD / 文档 / 对话级 chat）
+# --------------------------------------------------------------------------- #
+def test_conversation_crud_flow(client):
+    r = client.post("/api/conversations", json={})
+    assert r.status_code == 200
+    cid = r.json()["id"]
+    assert r.json()["title"] == "新对话"
+    # 列表
+    assert client.get("/api/conversations").json()[0]["id"] == cid
+    # 改名
+    assert client.patch(f"/api/conversations/{cid}", json={"title": "我的对话"}).json()["title"] == "我的对话"
+    # 详情
+    assert client.get(f"/api/conversations/{cid}").json()["title"] == "我的对话"
+    # 不存在
+    assert client.get("/api/conversations/nope").status_code == 404
+
+
+def test_conversation_isolation_between_users(client):
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    bob = _bob_headers(client)
+    # bob 看不到 testuser 的对话
+    assert client.get(f"/api/conversations/{cid}", headers=bob).status_code == 404
+    assert client.get("/api/conversations", headers=bob).json() == []
+    # bob 改名/删除 testuser 的对话也 404
+    assert client.patch(f"/api/conversations/{cid}", json={"title": "x"}, headers=bob).status_code == 404
+    assert client.delete(f"/api/conversations/{cid}", headers=bob).status_code == 404
+
+
+def test_conversation_requires_auth(client):
+    r = client.post("/api/conversations", json={}, headers={"Authorization": ""})
+    assert r.status_code == 401
+
+
+def test_delete_conversation_cleans_stores(client):
+    class _Rag:
+        def delete_conversation(self, owner, conversation_id):
+            return {"chunks": 5, "relations": 2}
+
+    main.app.state.rag = _Rag()
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    r = client.delete(f"/api/conversations/{cid}")
+    assert r.status_code == 200
+    assert r.json() == {"id": cid, "chunks": 5, "relations": 2}
+    # 已删，再取 404
+    assert client.get(f"/api/conversations/{cid}").status_code == 404
+
+
+def test_upload_conversation_documents_ingests_with_conv_id(client):
+    captured = {}
+
+    class _Rag:
+        def ingest_text(self, text, source="manual", owner=None, conversation_id=None):
+            captured["conv"] = conversation_id
+            return {"chunks": 2, "triples": 0}
+
+    main.app.state.rag = _Rag()
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    r = client.post(
+        f"/api/conversations/{cid}/documents",
+        files={"files": ("a.py", b"x = 1", "text/plain")},
+    )
+    assert r.status_code == 200
+    assert r.json()["succeeded"] == 1
+    assert captured["conv"] == cid
+    # 文档登记到对话清单
+    docs = client.get(f"/api/conversations/{cid}").json()["documents"]
+    assert [d["name"] for d in docs] == ["a.py"]
+
+
+def test_delete_conversation_document(client):
+    class _Rag:
+        def delete_document(self, source, owner=None, conversation_id=None):
+            assert conversation_id is not None
+            return {"source": source, "chunks": 3, "relations": 1}
+
+    main.app.state.rag = _Rag()
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    main.app.state.conversations.add_document("testuser", cid, {"name": "d.md", "chunks": 3, "at": 1})
+    r = client.request("DELETE", f"/api/conversations/{cid}/documents", json={"source": "d.md"})
+    assert r.status_code == 200
+    assert r.json()["chunks"] == 3
+    assert client.get(f"/api/conversations/{cid}").json()["documents"] == []
+
+
+def test_conversation_chat_accumulates_history(client, monkeypatch):
+    import types as _types
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    captured = {"hist_lens": []}
+
+    class _Graph:
+        def invoke(self, state):
+            captured["hist_lens"].append(len(state.get("history", [])))
+            captured["conv"] = state.get("conversation_id")
+            return {"answer": "A", "sources": [], "used_rag": False, "iterations": 1}
+
+    monkeypatch.setattr(main.app.state, "graph", _Graph())
+    r1 = client.post(f"/api/conversations/{cid}/chat", json={"message": "你好"})
+    assert r1.status_code == 200 and r1.json()["answer"] == "A"
+    client.post(f"/api/conversations/{cid}/chat", json={"message": "再问"})
+    # 第1轮历史0条；第2轮历史2条（上一轮 user+assistant）
+    assert captured["hist_lens"] == [0, 2]
+    assert captured["conv"] == cid
+    msgs = client.get(f"/api/conversations/{cid}").json()["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant"]
+    # 首条 user 触发自动改名
+    assert client.get(f"/api/conversations/{cid}").json()["title"].startswith("你好")
+
+
+def test_conversation_chat_other_user_404(client):
+    bob = _bob_headers(client)
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    assert client.post(f"/api/conversations/{cid}/chat", json={"message": "x"}, headers=bob).status_code == 404
+
+
+def test_conversation_chat_stream_writes_back(client, monkeypatch):
+    cid = client.post("/api/conversations", json={}).json()["id"]
+
+    class _StreamGraph:
+        async def astream(self, initial, stream_mode=("updates",)):
+            yield ("custom", {"type": "delta", "text": "答"})
+            yield ("custom", {"type": "delta", "text": "案"})
+
+    monkeypatch.setattr(main.app.state, "graph", _StreamGraph())
+    with client.stream("POST", f"/api/conversations/{cid}/chat/stream", json={"message": "问"}) as r:
+        body = "".join(r.iter_text())
+    assert '"type": "done"' in body or '"type":"done"' in body
+    # 流结束后写回对话记录
+    msgs = client.get(f"/api/conversations/{cid}").json()["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[1]["content"] == "答案"

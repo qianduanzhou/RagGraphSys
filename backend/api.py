@@ -10,8 +10,9 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 from core.logger import get_logger
 from services.auth_service import AuthError
 from services.archive import extract_zip
+from services.conversation_service import ConversationService
 from services.file_parser import ALLOWED_EXTS, parse_upload
 
 logger = get_logger(__name__)
@@ -174,6 +176,69 @@ def _history_to_dicts(history: Optional[List[ChatMessage]]) -> List[Dict[str, st
     if not history:
         return []
     return [{"role": m.role, "content": m.content} for m in history]
+
+
+def _conversations(request: Request) -> ConversationService:
+    svc = getattr(request.app.state, "conversations", None)
+    if svc is None:
+        raise HTTPException(status_code=503, detail="对话服务尚未初始化")
+    return svc
+
+
+def _require_conv(request: Request, conv_id: str, username: str) -> Dict[str, Any]:
+    conv = _conversations(request).get(username, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问")
+    return conv
+
+
+async def _collect_upload_sources(
+    files: List[UploadFile], folder_path: Optional[str]
+) -> Tuple[List[tuple], List[FileIngestResult]]:
+    """从上传文件与可选服务器文件夹汇聚待入库 ``(name, bytes)`` 列表；zip 先展开为成员。
+
+    旧的 ``/ingest/files`` 与新的 ``/conversations/{id}/documents`` 共用此收集逻辑，
+    各自再决定入库时带不带 ``conversation_id``。
+    """
+    file_sources: List[tuple] = []
+    zip_failures: List[FileIngestResult] = []
+
+    if folder_path:
+        fp = Path(folder_path)
+        if not fp.is_dir():
+            raise HTTPException(status_code=400, detail=f"文件夹不存在：{folder_path}")
+        for fpath in sorted(fp.rglob("*")):
+            if fpath.is_file() and fpath.suffix.lower() in ALLOWED_EXTS:
+                try:
+                    file_sources.append((fpath.name, fpath.read_bytes()))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("skip unreadable file %s: %s", fpath, exc)
+
+    for file in files:
+        name = file.filename or "upload"
+        suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        try:
+            raw = await file.read()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cannot read uploaded file %s: %s", name, exc)
+            continue
+
+        if suffix == ".zip":
+            try:
+                members = extract_zip(name, raw)
+            except ValueError as exc:  # noqa: BLE001
+                zip_failures.append(FileIngestResult(name=name, ok=False, error=str(exc)))
+                continue
+            if not members:
+                zip_failures.append(FileIngestResult(name=name, ok=False, error="zip 内无可入库文件"))
+            file_sources.extend(members)
+        elif suffix in ALLOWED_EXTS:
+            file_sources.append((name, raw))
+        else:
+            # 非白名单类型：直接跳过（多选会混入二进制 / 系统文件）
+            continue
+
+    return file_sources, zip_failures
 
 
 # ---------------------------------------------------------------------- #
@@ -510,51 +575,8 @@ async def ingest_files(
     """
     _, rag = _state(request)
 
-    # (display_name, raw_bytes) —— 上传文件与文件夹读取结果汇入同一队列，
-    # 统一交给 parse_upload 按扩展名解析（文本/代码、CSV、PDF、Word、Excel）。
-    # zip 容器会先经 extract_zip 展开为成员（source = zip 内相对路径）。
-    file_sources: List[tuple[str, bytes]] = []
-    zip_failures: List[FileIngestResult] = []  # 损坏 / 超限的 zip，单独记失败
-
-    # 1) 服务器文件夹路径（可选，递归读取白名单内文件）
-    if folder_path:
-        fp = Path(folder_path)
-        if not fp.is_dir():
-            raise HTTPException(status_code=400, detail=f"文件夹不存在：{folder_path}")
-        for fpath in sorted(fp.rglob("*")):
-            if fpath.is_file() and fpath.suffix.lower() in ALLOWED_EXTS:
-                try:
-                    file_sources.append((fpath.name, fpath.read_bytes()))
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("skip unreadable file %s: %s", fpath, exc)
-
-    # 2) 浏览器上传的文件（zip 先展开为成员，source 取 zip 内相对路径）
-    for file in files:
-        name = file.filename or "upload"
-        suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        try:
-            raw = await file.read()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("cannot read uploaded file %s: %s", name, exc)
-            continue
-
-        if suffix == ".zip":
-            try:
-                members = extract_zip(name, raw)
-            except ValueError as exc:  # noqa: BLE001
-                zip_failures.append(FileIngestResult(name=name, ok=False, error=str(exc)))
-                continue
-            if not members:
-                zip_failures.append(
-                    FileIngestResult(name=name, ok=False, error="zip 内无可入库文件")
-                )
-            file_sources.extend(members)
-        elif suffix in ALLOWED_EXTS:
-            file_sources.append((name, raw))
-        else:
-            # 非白名单类型：直接跳过（多选会混入二进制 / 系统文件）
-            continue
-
+    # 收集待入库来源（文件夹 + 上传文件，zip 先展开）；逻辑与对话文档端点共用。
+    file_sources, zip_failures = await _collect_upload_sources(files, folder_path)
     if not file_sources and not zip_failures:
         raise HTTPException(
             status_code=400,
@@ -588,4 +610,257 @@ async def ingest_files(
         succeeded=succeeded,
         failed=failed,
         files=results,
+    )
+
+
+# ---------------------------------------------------------------------- #
+# 对话管理（多对话：每对话独立文档列表 + 后端持久化历史）
+# ---------------------------------------------------------------------- #
+class ConversationCreateRequest(BaseModel):
+    title: Optional[str] = None
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1)
+
+
+class ConversationDocDeleteRequest(BaseModel):
+    source: str = Field(..., min_length=1)
+
+
+class ConversationDeleteResponse(BaseModel):
+    id: str
+    chunks: int
+    relations: int
+
+
+@router.post("/conversations")
+def create_conversation(
+    payload: ConversationCreateRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> Dict[str, Any]:
+    """新建对话；title 省略时为「新对话」，首条 user 消息后自动改名。"""
+    return _conversations(request).create(username, title=payload.title)
+
+
+@router.get("/conversations")
+def list_conversations(
+    request: Request,
+    username: str = Depends(current_user),
+) -> List[Dict[str, Any]]:
+    """列出当前用户的对话（按 updated_at 倒序，含摘要字段）。"""
+    return _conversations(request).list(username)
+
+
+@router.get("/conversations/{conv_id}")
+def get_conversation(
+    conv_id: str,
+    request: Request,
+    username: str = Depends(current_user),
+) -> Dict[str, Any]:
+    """取对话详情（messages + documents）。"""
+    return _require_conv(request, conv_id, username)
+
+
+@router.patch("/conversations/{conv_id}")
+def rename_conversation(
+    conv_id: str,
+    payload: ConversationRenameRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> Dict[str, Any]:
+    conv = _conversations(request).rename(username, conv_id, payload.title)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问")
+    return conv
+
+
+@router.delete("/conversations/{conv_id}", response_model=ConversationDeleteResponse)
+def delete_conversation(
+    conv_id: str,
+    request: Request,
+    username: str = Depends(current_user),
+) -> ConversationDeleteResponse:
+    """删除对话：清 JSON 记录 + 该对话的 Qdrant 分片 / Neo4j 关系。"""
+    svc = _conversations(request)
+    _, rag = _state(request)
+    deleted = svc.delete(username, conv_id)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问")
+    cleanup = rag.delete_conversation(username, conv_id)
+    logger.info("Deleted conversation %s for %s: %s", conv_id, username, cleanup)
+    return ConversationDeleteResponse(id=conv_id, **cleanup)
+
+
+@router.post("/conversations/{conv_id}/documents", response_model=BatchIngestResponse)
+async def upload_conversation_documents(
+    conv_id: str,
+    request: Request = None,  # type: ignore[assignment]
+    files: List[UploadFile] = File(default_factory=list),
+    folder_path: Optional[str] = None,
+    username: str = Depends(current_user),
+) -> BatchIngestResponse:
+    """往指定对话上传文档（多文件 / zip / 文件夹），文档归属该对话。
+
+    解析逻辑与 ``/ingest/files`` 一致，但入库时带 ``conversation_id``，问答仅检索本对话文档。
+    """
+    svc = _conversations(request)
+    _require_conv(request, conv_id, username)
+    _, rag = _state(request)
+
+    file_sources, zip_failures = await _collect_upload_sources(files, folder_path)
+    if not file_sources and not zip_failures:
+        raise HTTPException(
+            status_code=400,
+            detail="未提供可入库文件（支持：文本/代码、CSV、PDF、Word(.docx)、Excel(.xlsx/.xls)、zip）",
+        )
+
+    results: List[FileIngestResult] = list(zip_failures)
+    total_chunks = total_triples = 0
+    for fname, raw in file_sources:
+        try:
+            text = parse_upload(fname, raw)
+            stats = rag.ingest_text(text, source=fname, owner=username, conversation_id=conv_id)
+            total_chunks += stats["chunks"]
+            total_triples += stats["triples"]
+            svc.add_document(username, conv_id, {"name": fname, "chunks": stats["chunks"], "at": int(time.time())})
+            results.append(FileIngestResult(name=fname, chunks=stats["chunks"], triples=stats["triples"], ok=True))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("conversation ingest failed for %s", fname)
+            results.append(FileIngestResult(name=fname, ok=False, error=str(exc)))
+
+    succeeded = sum(1 for r in results if r.ok)
+    failed = len(results) - succeeded
+    return BatchIngestResponse(
+        status="ok" if failed == 0 else "partial",
+        chunks=total_chunks,
+        triples=total_triples,
+        succeeded=succeeded,
+        failed=failed,
+        files=results,
+    )
+
+
+@router.delete("/conversations/{conv_id}/documents", response_model=DeleteDocResponse)
+def delete_conversation_document(
+    conv_id: str,
+    payload: DeleteDocRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> DeleteDocResponse:
+    """删除对话内某文档：清其 Qdrant 分片 / Neo4j 关系，并从对话文档清单移除。"""
+    svc = _conversations(request)
+    _require_conv(request, conv_id, username)
+    _, rag = _state(request)
+    stats = rag.delete_document(payload.source, owner=username, conversation_id=conv_id)
+    svc.remove_document(username, conv_id, payload.source)
+    return DeleteDocResponse(
+        source=payload.source,
+        chunks=stats["chunks"],
+        relations=stats["relations"],
+    )
+
+
+# ---------------------------------------------------------------------- #
+# 对话级问答（后端从对话记录加载历史、生成后写回；不再由前端发送 history）
+# ---------------------------------------------------------------------- #
+@router.post("/conversations/{conv_id}/chat", response_model=ChatResponse)
+def conversation_chat(
+    conv_id: str,
+    payload: ChatRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> ChatResponse:
+    """在指定对话内非流式问答。"""
+    convs = _conversations(request)
+    conv = convs.get(username, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问")
+    graph = _select_graph(request, payload.mode)
+
+    history = [{"role": m["role"], "content": m["content"]} for m in conv.get("messages", [])]
+    logger.info("/conversations/%s/chat mode=%s question=%s", conv_id, payload.mode, payload.message[:120])
+    try:
+        result = graph.invoke(
+            {
+                "question": payload.message,
+                "history": history,
+                "iterations": 0,
+                "owner": username,
+                "conversation_id": conv_id,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("conversation graph invocation failed")
+        raise HTTPException(status_code=500, detail=f"问答流程执行失败：{exc}") from exc
+
+    answer = result.get("answer", "")
+    # 生成成功后写回对话记忆（本轮 user + assistant）
+    convs.append_message(username, conv_id, "user", payload.message)
+    convs.append_message(username, conv_id, "assistant", answer)
+
+    return ChatResponse(
+        answer=answer,
+        sources=result.get("sources", []),
+        used_rag=result.get("used_rag", False),
+        iterations=result.get("iterations", 0),
+    )
+
+
+@router.post("/conversations/{conv_id}/chat/stream")
+async def conversation_chat_stream(
+    conv_id: str,
+    payload: ChatRequest,
+    request: Request,
+    username: str = Depends(current_user),
+) -> StreamingResponse:
+    """在指定对话内流式问答（SSE）；流结束后把本轮 user + assistant 写回对话记录。"""
+    convs = _conversations(request)
+    conv = convs.get(username, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问")
+    graph = _select_graph(request, payload.mode)
+
+    history = [{"role": m["role"], "content": m["content"]} for m in conv.get("messages", [])]
+    initial = {
+        "question": payload.message,
+        "history": history,
+        "iterations": 0,
+        "streaming": True,
+        "owner": username,
+        "conversation_id": conv_id,
+    }
+
+    async def event_stream():
+        buffer: List[str] = []
+        try:
+            async for mode, data in graph.astream(initial, stream_mode=["updates", "custom"]):
+                if mode == "updates":
+                    for node, update in data.items():
+                        yield _sse(
+                            {"type": "node", "node": node, "update": _summarize_update(node, update)}
+                        )
+                elif mode == "custom":
+                    if isinstance(data, dict) and data.get("type") == "delta" and "text" in data:
+                        buffer.append(data["text"])
+                    yield _sse(data)
+            yield _sse({"type": "done"})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("conversation stream graph failed: %s", exc)
+            yield _sse({"type": "error", "message": f"问答流程执行失败：{exc}"})
+        finally:
+            answer = "".join(buffer)
+            convs.append_message(username, conv_id, "user", payload.message)
+            if answer:
+                convs.append_message(username, conv_id, "assistant", answer)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )

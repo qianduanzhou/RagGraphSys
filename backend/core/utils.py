@@ -60,6 +60,27 @@ def truncate(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+# 聚合/穷举型查询的意图特征：
+#   * 强信号词（列出/有哪些/一览/清单…）直接判定为聚合；
+#   * 弱信号词「所有/全部」需后跟≥2字符，避免「所有?」这类短输入误触发。
+_AGGREGATE_RE = re.compile(
+    r"(列出|列举|有哪些|分别是|一览|清单|汇总|每个|各个|多少|总共|完整列表)"
+    r"|(?:所有|全部).{2,}"
+)
+
+
+def is_aggregate_query(query: str) -> bool:
+    """判断 ``query`` 是否为聚合/穷举型提问（如「列出所有岗位」「岗位清单」）。
+
+    这类查询需要整文档的全部内容，top-k 语义检索无法满足——上游据此改走整文档拉取。
+    单独的关键词启发足以覆盖常见中文聚合问法；误触发由调用方的相关度阈值与
+    「单一文档占主导」规则兜底（见 :meth:`RagService.resolve_vector_hits`）。
+    """
+    if not query:
+        return False
+    return bool(_AGGREGATE_RE.search(query))
+
+
 def split_text(text: str, chunk_size: int = 500, chunk_overlap: int = 80) -> List[str]:
     """使用 LangChain 的递归切分器将 ``text`` 切分为带重叠的片段。"""
     from langchain_text_splitters import RecursiveCharacterTextSplitter

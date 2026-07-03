@@ -19,6 +19,7 @@ from rag.neo4j_store import Neo4jStore
 from rag.qdrant_store import QdrantStore
 from rag.rag_service import RagService
 from services.auth_service import AuthService
+from services.conversation_service import ConversationService
 from services.embedding_service import EmbeddingService
 from services.llm_service import LLMService
 from services.web_search_service import WebSearchService
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     logger.info("Initialising services...")
 
     auth = AuthService(settings.auth_db_path)
+    conversations = ConversationService(settings.conversations_db_path)
     llm = LLMService(settings)
     embedding = EmbeddingService(settings)
     qdrant = QdrantStore(settings, embedding)
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Neo4j unavailable at startup: %s", exc)
 
     app.state.auth = auth
+    app.state.conversations = conversations
     app.state.llm = llm
     app.state.embedding = embedding
     app.state.qdrant = qdrant

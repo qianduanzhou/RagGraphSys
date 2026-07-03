@@ -105,3 +105,41 @@ def test_close_marks_driver_closed(settings):
     store = make_store(settings)
     store.close()
     assert store.driver.closed is True
+
+
+# --- conversation_id 隔离（来源标记前缀）---
+def test_search_owner_prefix(settings):
+    session = FakeSession()
+    store = make_store(settings, session)
+    store.search(["x"], owner="alice")
+    _, params = session.run_calls[0]
+    assert params["scope_prefix"] == "alice::"
+
+
+def test_search_conversation_prefix(settings):
+    session = FakeSession()
+    store = make_store(settings, session)
+    store.search(["x"], owner="alice", conversation_id="c1")
+    _, params = session.run_calls[0]
+    # 对话前缀在 owner 前缀基础上进一步收窄
+    assert params["scope_prefix"] == "alice::c1::"
+
+
+def test_search_no_scope_when_unspecified(settings):
+    session = FakeSession()
+    store = make_store(settings, session)
+    store.search(["x"])
+    _, params = session.run_calls[0]
+    assert params["scope_prefix"] is None
+
+
+def test_delete_by_conversation_uses_prefix(settings):
+    tx = FakeTx(records=[{"deleted": 4}])
+    store = make_store(settings, FakeSession(tx=tx))
+    n = store.delete_by_conversation("alice", "c1")
+    assert n == 4
+    cypher, params = tx.calls[0]
+    assert "STARTS WITH $prefix" in cypher
+    assert params["prefix"] == "alice::c1::"
+    # 第二条是清理孤立节点
+    assert len(tx.calls) >= 2

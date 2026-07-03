@@ -130,8 +130,14 @@ class Neo4jStore:
         entities: Sequence[str],
         limit: int = 5,
         owner: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """返回从给定实体关键词可达的一跳关系。"""
+        """返回从给定实体关键词可达的一跳关系。
+
+        ``owner`` / ``conversation_id`` 非 None 时按来源标记前缀过滤（多用户/多对话隔离）。
+        来源标记形如 ``{owner}::{conversation_id}::{source}``，故 owner 前缀
+        ``{owner}::`` 天然兼容（仍命中带对话维度的标记），对话前缀进一步收窄。
+        """
         entities = [e for e in entities if e]
         if not entities:
             return []
@@ -143,15 +149,20 @@ class Neo4jStore:
             "MATCH (a)-[r]-(b) "
             "WITH a, r, b "
             "WHERE a.name <> b.name "
-            "  AND ($owner_prefix IS NULL OR ANY(s IN coalesce(r.sources, []) WHERE s STARTS WITH $owner_prefix)) "
+            "  AND ($scope_prefix IS NULL OR ANY(s IN coalesce(r.sources, []) WHERE s STARTS WITH $scope_prefix)) "
             "RETURN a.name AS head, type(r) AS rel, b.name AS tail "
             "LIMIT toInteger($limit)"
         )
-        owner_prefix = f"{owner}::" if owner else None
+        parts = []
+        if owner:
+            parts.append(f"{owner}::")
+        if conversation_id:
+            parts.append(f"{conversation_id}::")
+        scope_prefix = "".join(parts) or None
         seen = set()
         results: List[Dict[str, Any]] = []
         with self.driver.session() as session:
-            records = session.run(cypher, entities=list(entities), limit=limit, owner_prefix=owner_prefix)
+            records = session.run(cypher, entities=list(entities), limit=limit, scope_prefix=scope_prefix)
             for record in records:
                 key = (record["head"], record["rel"], record["tail"])
                 if key in seen:
@@ -160,6 +171,38 @@ class Neo4jStore:
                 results.append({"head": record["head"], "rel": record["rel"], "tail": record["tail"]})
         logger.info("Neo4j search returned %d relations for entities=%s", len(results), entities)
         return results
+
+    def delete_by_conversation(self, owner: Optional[str], conversation_id: str) -> int:
+        """删除某对话在图谱中的全部关系标记，并清理由此变为孤立的关系/实体。
+
+        复用 ``sources`` 数组机制：移除所有以 ``{owner}::{conversation_id}::`` 开头的来源
+        标记，数组为空的关系被删除。无 ``sources`` 的历史关系不受影响。
+        """
+        parts = []
+        if owner:
+            parts.append(f"{owner}::")
+        parts.append(f"{conversation_id}::")
+        prefix = "".join(parts)
+        with self.driver.session() as session:
+            deleted = session.execute_write(self._delete_by_prefix, prefix)
+        logger.info("Deleted %d relations for conversation=%s", deleted, conversation_id)
+        return deleted
+
+    @staticmethod
+    def _delete_by_prefix(tx, prefix: str) -> int:
+        rec = tx.run(
+            "MATCH (a)-[r]->(b) "
+            "WHERE ANY(s IN coalesce(r.sources, []) WHERE s STARTS WITH $prefix) "
+            "WITH r, [s IN coalesce(r.sources, []) WHERE NOT s STARTS WITH $prefix] AS rest "
+            "SET r.sources = rest "
+            "WITH r WHERE size(coalesce(r.sources, [])) = 0 "
+            "DELETE r "
+            "RETURN count(r) AS deleted",
+            prefix=prefix,
+        ).single()
+        deleted = rec["deleted"] if rec else 0
+        tx.run("MATCH (n:Entity) WHERE NOT (n)--() DELETE n")
+        return deleted
 
     def count_entities(self, owner: Optional[str] = None) -> int:
         with self.driver.session() as session:

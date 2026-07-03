@@ -88,8 +88,13 @@ class QdrantStore:
         query: str,
         top_k: Optional[int] = None,
         owner: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """cosine 相似度检索；返回最匹配的 top_k 条结果及其 payload。"""
+        """cosine 相似度检索；返回最匹配的 top_k 条结果及其 payload。
+
+        ``conversation_id`` 非 None 时按对话过滤（多对话隔离）；为 None 则不过滤
+        （兼容旧的单对话路径与既有测试）。
+        """
         limit = top_k or self.settings.qdrant_top_k
         query_vector = self.embedding.embed(query)
         response = self.client.query_points(
@@ -97,7 +102,7 @@ class QdrantStore:
             query=query_vector,
             limit=limit,
             with_payload=True,
-            query_filter=self._payload_filter(owner=owner),
+            query_filter=self._payload_filter(owner=owner, conversation_id=conversation_id),
         )
         results = []
         for point in response.points:
@@ -128,17 +133,25 @@ class QdrantStore:
     # ------------------------------------------------------------------ #
     # 删除
     # ------------------------------------------------------------------ #
-    def delete_by_source(self, source: str, owner: Optional[str] = None) -> int:
+    def delete_by_source(
+        self,
+        source: str,
+        owner: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> int:
         """删除某来源（文件名）文档的所有分片。返回 best-effort 删除条数。
 
         通过 payload 的 ``source`` 字段过滤删除；删除条数用前后 ``count`` 差值估算，
-        若 count 不可用则返回 0（不影响实际删除是否生效）。
+        若 count 不可用则返回 0（不影响实际删除是否生效）。``conversation_id`` 非
+        None 时仅在指定对话范围内删除（同名文件跨对话不串）。
         """
         try:
             before = self.count(owner=owner)
             self.client.delete(
                 collection_name=self.collection,
-                points_selector=self._payload_filter(source=source, owner=owner),
+                points_selector=self._payload_filter(
+                    source=source, owner=owner, conversation_id=conversation_id
+                ),
             )
             after = self.count(owner=owner)
             removed = (before - after) if (before >= 0 and after >= 0) else 0
@@ -150,6 +163,95 @@ class QdrantStore:
         except Exception as exc:  # noqa: BLE001
             logger.warning("delete_by_source failed: %s", exc)
             return 0
+
+    def delete_by_conversation(self, owner: Optional[str], conversation_id: str) -> int:
+        """删除某对话的全部分片。返回 best-effort 删除条数。
+
+        用于删除整个对话时清理其知识库；按 ``(owner, conversation_id)`` 过滤。
+        """
+        try:
+            before = self.count(owner=owner)
+            self.client.delete(
+                collection_name=self.collection,
+                points_selector=self._payload_filter(owner=owner, conversation_id=conversation_id),
+            )
+            after = self.count(owner=owner)
+            removed = (before - after) if (before >= 0 and after >= 0) else 0
+            logger.info("Deleted ~%d points for conversation=%s", removed, conversation_id)
+            return removed
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("delete_by_conversation failed: %s", exc)
+            return 0
+
+    def set_payload_by_ids(self, ids: List[str], payload: Dict[str, Any]) -> int:
+        """按 point id 批量更新 payload（迁移脚本回填 ``conversation_id`` 用）。返回更新条数。"""
+        if not ids:
+            return 0
+        try:
+            self.client.set_payload(
+                collection_name=self.collection,
+                payload=payload,
+                points=list(ids),
+            )
+            return len(ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("set_payload_by_ids failed: %s", exc)
+            return 0
+
+    def scroll_by_source(
+        self,
+        source: str,
+        owner: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        batch_size: int = 256,
+    ) -> List[Dict[str, Any]]:
+        """拉取某个来源文档的**全部分片**，按 ``chunk_index`` 排序后返回。
+
+        用于聚合/穷举型查询（如「列出所有岗位」）：这类查询需要整文档内容，
+        top-k 语义检索只能返回部分分片；这里改为按 source 过滤拉取全部。
+
+        返回与 :meth:`search` 同形的 dict，但 ``score=None``（无真实相似度）——
+        :func:`rag.rag_service.merge_results` 会对 ``score is None`` 放行阈值过滤。
+        """
+        try:
+            points: List[Dict[str, Any]] = []
+            offset = None
+            scroll_filter = self._payload_filter(source=source, owner=owner, conversation_id=conversation_id)
+            while True:
+                records, next_offset = self.client.scroll(
+                    collection_name=self.collection,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                    scroll_filter=scroll_filter,
+                )
+                for record in records or []:
+                    payload = getattr(record, "payload", None) or {}
+                    points.append({"id": getattr(record, "id", None), "payload": payload})
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            # 按 chunk_index 稳定排序（ingest_text 必写该字段；缺失退 0、保持插入序）
+            points.sort(key=lambda p: int((p["payload"] or {}).get("chunk_index") or 0))
+
+            if limit is not None:
+                points = points[:limit]
+
+            return [
+                {
+                    "text": (p["payload"] or {}).get("text", ""),
+                    "score": None,
+                    "source": (p["payload"] or {}).get("source", "unknown"),
+                    "payload": p["payload"],
+                }
+                for p in points
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scroll_by_source failed: %s", exc)
+            return []
 
     def scan_all(self, batch_size: int = 256, owner: Optional[str] = None) -> List[Dict[str, Any]]:
         """扫描集合中所有点，返回 ``[{id, payload}]``。用于聚合文档列表。

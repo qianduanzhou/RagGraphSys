@@ -178,6 +178,17 @@ class FakeQdrantClient:
         ]
         return types.SimpleNamespace(operation_id=1)
 
+    def set_payload(self, collection_name: str, payload: Any, points: Any) -> Any:
+        """模拟 set_payload：按 point id 批量更新 payload（迁移回填用）。"""
+        ids = {str(p) for p in (points or [])}
+        for p in self.points:
+            if str(getattr(p, "id", None)) in ids:
+                payload = payload or {}
+                if getattr(p, "payload", None) is None:
+                    p.payload = {}
+                p.payload.update(payload)
+        return types.SimpleNamespace(operation_id=1)
+
     def scroll(self, collection_name: str, limit: int = 10, offset: Optional[int] = None,
                with_payload: bool = True, with_vectors: bool = False, scroll_filter: Any = None):
         """模拟 qdrant_client 的 scroll：返回 (records, next_offset) 元组。
@@ -229,6 +240,7 @@ class FakeSession:
     def __init__(self, tx: Optional[FakeTx] = None, records: Optional[List[dict]] = None) -> None:
         self._tx = tx or FakeTx()
         self._records = records or []
+        self.run_calls: List[tuple] = []  # (cypher, params)，供 search 断言
 
     def __enter__(self):
         return self
@@ -240,6 +252,7 @@ class FakeSession:
         return fn(self._tx, *args)
 
     def run(self, cypher: str, **params):
+        self.run_calls.append((cypher, params))
         return FakeResult(self._records)
 
 
@@ -293,14 +306,18 @@ class MockLLM:
         self.raise_on_chat = raise_on_chat
         self.raise_on_stream = raise_on_stream
         self.chat_calls: int = 0
+        # 记录最近一次 chat / chat_stream 收到的 kwargs（供 max_tokens 绑定断言）
+        self.last_chat_kwargs: dict = {}
 
     def chat(self, messages, **kw) -> str:
         self.chat_calls += 1
+        self.last_chat_kwargs = kw
         if self.raise_on_chat:
             raise RuntimeError("chat boom")
         return self.chat_resp
 
     def chat_stream(self, messages, **kw):
+        self.last_chat_kwargs = kw
         if self.raise_on_stream:
             raise RuntimeError("stream boom")
         for token in self.stream_tokens:
@@ -308,6 +325,9 @@ class MockLLM:
 
     def extract_keywords(self, query: str, max_entities: int = 5) -> List[str]:
         return list(self.keywords)
+
+    def extract_graph(self, text: str, max_triples: int = 12) -> List[Dict[str, Any]]:
+        return []
 
     def reflect(self, question: str, answer: str, context: str) -> Dict[str, Any]:
         return {"pass": self.reflect_pass, "feedback": self.reflect_feedback}
@@ -319,17 +339,31 @@ class MockQdrant:
         hits: Optional[List[dict]] = None,
         raise_search: bool = False,
         deleted: int = 0,
+        scroll_hits: Optional[List[dict]] = None,
     ) -> None:
         self._hits = hits if hits is not None else [{"text": "vec", "score": 0.9, "source": "d.txt"}]
         self.raise_search = raise_search
         self.deleted = deleted
+        # 整文档拉取（scroll_by_source）的注入式返回；默认 [] 适配非聚合测试
+        self._scroll_hits = scroll_hits if scroll_hits is not None else []
+        self.scroll_calls: List[tuple] = []
 
-    def search(self, query: str, top_k: Optional[int] = None, owner: Optional[str] = None) -> List[dict]:
+    def search(self, query: str, top_k: Optional[int] = None, owner: Optional[str] = None, conversation_id: Optional[str] = None) -> List[dict]:
         if self.raise_search:
             raise RuntimeError("qdrant down")
         return list(self._hits)
 
-    def delete_by_source(self, source: str, owner: Optional[str] = None) -> int:
+    def scroll_by_source(self, source: str, owner: Optional[str] = None, conversation_id: Optional[str] = None, limit: Optional[int] = None) -> List[dict]:
+        self.scroll_calls.append((source, owner, conversation_id, limit))
+        out = list(self._scroll_hits)
+        if limit is not None:
+            out = out[:limit]
+        return out
+
+    def delete_by_source(self, source: str, owner: Optional[str] = None, conversation_id: Optional[str] = None) -> int:
+        return self.deleted
+
+    def delete_by_conversation(self, owner: Optional[str], conversation_id: str) -> int:
         return self.deleted
 
 
@@ -338,14 +372,33 @@ class MockNeo4j:
         self._rels = rels if rels is not None else [{"head": "X", "rel": "RELATES_TO", "tail": "Y"}]
         self.deleted = deleted
 
-    def search(self, entities, limit: int = 5, owner: Optional[str] = None) -> List[dict]:
+    def add_knowledge(self, triples, source: Optional[str] = None, conversation_id: Optional[str] = None) -> int:
+        return 0
+
+    def search(self, entities, limit: int = 5, owner: Optional[str] = None, conversation_id: Optional[str] = None) -> List[dict]:
         return list(self._rels)
 
     def delete_by_source(self, source: str) -> int:
         return self.deleted
 
+    def delete_by_conversation(self, owner: Optional[str], conversation_id: str) -> int:
+        return self.deleted
+
 
 class MockRag:
-    def __init__(self, qdrant: Optional[MockQdrant] = None, neo4j: Optional[MockNeo4j] = None) -> None:
+    def __init__(
+        self,
+        qdrant: Optional[MockQdrant] = None,
+        neo4j: Optional[MockNeo4j] = None,
+        # 可选：强制 resolve_vector_hits 的返回 (hits, aggregate)；不传则透传原命中、aggregate=False
+        resolve: Optional[tuple] = None,
+    ) -> None:
         self.qdrant = qdrant or MockQdrant()
         self.neo4j = neo4j or MockNeo4j()
+        self._resolve = resolve
+
+    def resolve_vector_hits(self, question: str, vector_hits: List[dict], owner: Optional[str] = None, conversation_id: Optional[str] = None):
+        if self._resolve is not None:
+            hits, agg = self._resolve
+            return list(hits), agg
+        return list(vector_hits), False

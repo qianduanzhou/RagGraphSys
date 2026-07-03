@@ -31,11 +31,16 @@ class Settings(BaseSettings):
     )
 
     # ---- LLM / Embedding（OpenAI 兼容） ----
-    # 通过任意 OpenAI 兼容接口接入（智谱 / OpenAI / DeepSeek / 本地 vLLM 等），
-    # 只需在 .env 中配置对应的 base_url 与 api_key。
+    # 通过任意 OpenAI 兼容接口接入（智谱 / OpenAI / DeepSeek / 本地 vLLM 等）。
+    # LLM 与 Embedding 可分别接入不同厂商：各自配置对应的 base_url 与 api_key。
     llm_api_key: str = ""
     llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
     llm_model: str = "glm-5.2"
+    # Embedding 允许接入与 LLM 不同的厂商：base_url / api_key 各自独立。
+    # embedding_api_key 留空时回退到 llm_api_key（与 LLM 同厂商时无需重复填写）；
+    # embedding_base_url 默认与 llm_base_url 同源，换厂商时改成 embedding 服务地址。
+    embedding_api_key: str = ""
+    embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
     embedding_model: str = "embedding-3"
     embedding_dimension: int = 2048
     llm_request_timeout: int = 60
@@ -65,6 +70,11 @@ class Settings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 80
     max_reflection_iterations: int = 2  # 最大生成尝试次数
+    # 聚合型查询（「列出所有岗位」等整文档穷举）专用：
+    # 触发时按命中文档拉取全部分片（不受 top_k 限制），并放宽输出 token 上限，
+    # 避免 top-k 语义检索只回出部分条目、长列表被截断。
+    rag_aggregate_max_chunks: int = 60  # 整文档拉取的分片上限，控制上下文体量
+    llm_max_tokens_aggregate: int = 4096  # 聚合型回答的输出上限
 
     # ---- 应用 ----
     app_host: str = "0.0.0.0"
@@ -72,6 +82,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://localhost:4173"
     log_level: str = "INFO"
     auth_db_path: str = str(BASE_DIR / "data" / "users.json")
+    conversations_db_path: str = str(BASE_DIR / "data" / "conversations.json")
 
     @property
     def cors_origins_list(self) -> list[str]:

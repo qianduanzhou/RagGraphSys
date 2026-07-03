@@ -45,6 +45,28 @@ def test_qdrant_node_degrades(settings):
     assert nodes.qdrant({"question": "q"}) == {"qdrant_results": []}
 
 
+def test_qdrant_node_passes_conversation_id(settings):
+    class Q(MockQdrant):
+        def search(self, query, top_k=None, owner=None, conversation_id=None):
+            return [{"text": str(conversation_id), "score": 0.9, "source": "d"}]
+
+    rag = MockRag(Q())
+    nodes = GraphNodes(MockLLM(), rag, settings)
+    out = nodes.qdrant({"question": "q", "owner": "alice", "conversation_id": "c1"})
+    assert out["qdrant_results"][0]["text"] == "c1"
+
+
+def test_neo4j_node_passes_conversation_id(settings):
+    class N(MockNeo4j):
+        def search(self, entities, limit=5, owner=None, conversation_id=None):
+            return [{"head": str(conversation_id), "rel": "R", "tail": "Y"}]
+
+    rag = MockRag(None, N())
+    nodes = GraphNodes(MockLLM(keywords=["x"]), rag, settings)
+    out = nodes.neo4j({"question": "q", "conversation_id": "c1"})
+    assert out["neo4j_results"][0]["head"] == "c1"
+
+
 def test_neo4j_node(settings):
     rag = MockRag(None, MockNeo4j(rels=[{"head": "X", "rel": "R", "tail": "Y"}]))
     nodes = GraphNodes(MockLLM(keywords=["X"]), rag, settings)
@@ -64,6 +86,50 @@ def test_merge_node(settings):
     assert out["context"]  # 非空
 
 
+def test_merge_node_aggregate_replaces_with_scroll(settings):
+    # 聚合触发：resolve_vector_hits 把命中改写为整文档分片，sources 数 = 分片数
+    scroll = [{"text": f"c{i}", "score": None, "source": "jobs.pdf"} for i in range(5)]
+    rag = MockRag(resolve=(scroll, True))
+    nodes = GraphNodes(MockLLM(), rag, settings)
+    out = nodes.merge({
+        "question": "列出所有岗位",
+        "qdrant_results": [{"text": "h", "score": 0.9, "source": "jobs.pdf"}],
+        "neo4j_results": [],
+    })
+    assert out["aggregate"] is True
+    assert len(out["sources"]) == 5
+    assert out["used_rag"] is True
+
+
+def test_merge_node_non_aggregate_passes_through(settings):
+    # 非聚合：resolve_vector_hits 透传原命中、aggregate=False
+    nodes = GraphNodes(MockLLM(), MockRag(), settings)
+    out = nodes.merge({
+        "question": "广州车站行车岗位要什么学历",
+        "qdrant_results": [{"text": "v", "score": 0.8, "source": "d"}],
+        "neo4j_results": [],
+    })
+    assert out["aggregate"] is False
+    assert len(out["sources"]) == 1
+
+
+def test_merge_node_passes_conversation_id_to_resolve(settings):
+    seen = {}
+
+    class R(MockRag):
+        def resolve_vector_hits(self, question, vector_hits, owner=None, conversation_id=None):
+            seen["cid"] = conversation_id
+            return vector_hits, False
+
+    nodes = GraphNodes(MockLLM(), R(), settings)
+    nodes.merge({
+        "question": "q",
+        "qdrant_results": [{"text": "v", "score": 0.9, "source": "d"}],
+        "conversation_id": "c1",
+    })
+    assert seen["cid"] == "c1"
+
+
 # --- llm_node（生成节点）---
 def test_llm_node_non_stream(settings):
     out = make_nodes(settings, chat_resp="最终答案").llm_generate(
@@ -80,6 +146,24 @@ def test_llm_node_empty_context_answers_directly(settings):
     out = nodes.llm_generate({"question": "你好", "history": [], "context": "", "iterations": 0})
     assert out["answer"] == "通用回答"
     assert llm.chat_calls == 1
+
+
+def test_llm_node_binds_aggregate_max_tokens(settings):
+    # 聚合型回答放宽输出上限，避免长列表被截断
+    llm = MockLLM(chat_resp="长列表")
+    nodes = GraphNodes(llm, MockRag(), settings)
+    nodes.llm_generate({
+        "question": "列出所有岗位", "history": [], "context": "ctx", "iterations": 0,
+        "aggregate": True,
+    })
+    assert llm.last_chat_kwargs.get("max_tokens") == settings.llm_max_tokens_aggregate
+
+
+def test_llm_node_default_max_tokens_when_not_aggregate(settings):
+    llm = MockLLM(chat_resp="答")
+    nodes = GraphNodes(llm, MockRag(), settings)
+    nodes.llm_generate({"question": "q", "history": [], "context": "ctx", "iterations": 0})
+    assert llm.last_chat_kwargs.get("max_tokens") is None
 
 
 def test_llm_node_stream_emits_via_writer(settings, monkeypatch):

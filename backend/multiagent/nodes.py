@@ -36,10 +36,12 @@ class MultiAgentState(TypedDict, total=False):
     web_sources: List[Dict[str, Any]]
     used_rag: bool
     used_web: bool
+    rag_aggregate: bool  # RAG 命中为整文档拉取（聚合查询），整合层也需放宽输出上限
     answer: str
     iterations: int
     streaming: bool
     owner: str
+    conversation_id: str  # 多对话隔离：RAG 检索按 (owner, conversation_id) 过滤
 
 
 class MultiAgentNodes:
@@ -63,11 +65,15 @@ class MultiAgentNodes:
     # ------------------------------------------------------------------ #
     def rag_agent(self, state: MultiAgentState) -> Dict[str, Any]:
         question = state["question"]
+        aggregate = False
         try:
-            retrieved = self.rag.build_context(question, owner=state.get("owner"))
+            retrieved = self.rag.build_context(
+                question, owner=state.get("owner"), conversation_id=state.get("conversation_id"),
+            )
             context = retrieved.get("context", "") or ""
             sources = retrieved.get("sources", []) or []
             used_rag = bool(retrieved.get("used_rag", False))
+            aggregate = bool(retrieved.get("aggregate", False))
         except Exception as exc:  # noqa: BLE001
             logger.exception("rag_agent retrieval failed: %s", exc)
             context, sources, used_rag = "", [], False
@@ -79,17 +85,27 @@ class MultiAgentNodes:
         )
         system += f"\n\n知识库资料：\n{context}" if context else "\n\n（知识库中无相关资料）"
 
+        # 聚合型回答（整文档拉取）篇幅长，放宽输出 token 上限
+        gen_max_tokens = self.settings.llm_max_tokens_aggregate if aggregate else None
         try:
-            answer = self.llm.chat([
-                {"role": "system", "content": system},
-                {"role": "user", "content": question},
-            ])
+            answer = self.llm.chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": question},
+                ],
+                max_tokens=gen_max_tokens,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("rag_agent generation failed: %s", exc)
             answer = "（知识库检索失败）"
 
-        logger.info("rag_agent: used_rag=%s, sources=%d", used_rag, len(sources))
-        return {"rag_agent_answer": answer, "rag_agent_sources": sources, "used_rag": used_rag}
+        logger.info("rag_agent: used_rag=%s, sources=%d, aggregate=%s", used_rag, len(sources), aggregate)
+        return {
+            "rag_agent_answer": answer,
+            "rag_agent_sources": sources,
+            "used_rag": used_rag,
+            "rag_aggregate": aggregate,
+        }
 
     # ------------------------------------------------------------------ #
     # web_agent_node — 联网搜索并生成回答
@@ -166,16 +182,19 @@ class MultiAgentNodes:
 
         messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": question}]
 
+        # RAG 命中为整文档拉取时，整合层同样放宽输出上限，避免长列表二次截断
+        gen_max_tokens = self.settings.llm_max_tokens_aggregate if state.get("rag_aggregate") else None
+
         try:
             if state.get("streaming"):
                 writer = get_stream_writer()
                 buffer: List[str] = []
-                for token in self.llm.chat_stream(messages):
+                for token in self.llm.chat_stream(messages, max_tokens=gen_max_tokens):
                     buffer.append(token)
                     writer({"type": "delta", "text": token})
                 answer = "".join(buffer)
             else:
-                answer = self.llm.chat(messages)
+                answer = self.llm.chat(messages, max_tokens=gen_max_tokens)
         except Exception as exc:  # noqa: BLE001
             logger.exception("integration generation failed: %s", exc)
             answer = f"抱歉，整合回答时出错：{exc}"

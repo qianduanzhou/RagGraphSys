@@ -52,6 +52,20 @@ def test_merge_results_default_threshold_keeps_all():
     assert len(sources) == 1
 
 
+def test_merge_results_none_score_passes_threshold():
+    # 整文档拉取的分片 score=None，无条件放行阈值过滤
+    hits = [{"text": "整文档片段", "score": None, "source": "d"}]
+    context, sources = merge_results(hits, [], score_threshold=0.35)
+    assert len(sources) == 1
+    assert "整文档片段" in context
+
+
+def test_merge_results_renders_na_for_none_score():
+    hits = [{"text": "x", "score": None, "source": "d"}]
+    context, _ = merge_results(hits, [])
+    assert "score=n/a" in context
+
+
 # --------------------------------------------------------------------------- #
 # RagService.retrieve / build_context
 # --------------------------------------------------------------------------- #
@@ -101,6 +115,159 @@ def test_build_context_no_hits_means_no_rag(settings):
     assert built["used_rag"] is False
     assert built["sources"] == []
     assert built["context"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# 聚合型查询：resolve_vector_hits（经 retrieve / build_context 触发）
+# --------------------------------------------------------------------------- #
+def test_retrieve_aggregate_replaces_with_scroll(settings):
+    # 5 条 top-k 命中均来自 jobs.pdf 且高分 -> 主导，整文档拉取 18 个分片
+    jobs_hits = [{"text": f"h{i}", "score": 0.9, "source": "jobs.pdf"} for i in range(5)]
+    scroll = [{"text": f"chunk-{i}", "score": None, "source": "jobs.pdf"} for i in range(18)]
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=jobs_hits, scroll_hits=scroll),
+        neo4j=MockNeo4j(rels=[]),
+        settings=settings,
+    )
+    out = rag.retrieve("列出所有岗位")
+    assert out["aggregate"] is True
+    assert len(out["qdrant"]) == 18
+    assert all(h["score"] is None for h in out["qdrant"])
+
+
+def test_retrieve_aggregate_skipped_when_no_dominant_source(settings):
+    # 5 条命中分散在 3 个文档、无人过半 -> 不触发整文档拉取
+    scattered = [
+        {"text": "a1", "score": 0.9, "source": "a.pdf"},
+        {"text": "a2", "score": 0.9, "source": "a.pdf"},
+        {"text": "b1", "score": 0.9, "source": "b.pdf"},
+        {"text": "b2", "score": 0.9, "source": "b.pdf"},
+        {"text": "c1", "score": 0.9, "source": "c.pdf"},
+    ]
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=scattered, scroll_hits=[{"text": "x"}]),
+        settings=settings,
+    )
+    out = rag.retrieve("列出所有岗位")
+    assert out["aggregate"] is False
+    assert len(out["qdrant"]) == 5  # 原命中原样返回
+
+
+def test_retrieve_aggregate_skipped_when_low_score(settings):
+    # 聚合问句但命中分 0.1 < 阈值 -> 不触发（闲聊误触发兜底）
+    low = [{"text": "h", "score": 0.1, "source": "jobs.pdf"}] * 5
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=low, scroll_hits=[{"text": "x"}]),
+        settings=settings,
+    )
+    out = rag.retrieve("列出所有岗位")
+    assert out["aggregate"] is False
+
+
+def test_retrieve_non_aggregate_unchanged(settings):
+    hits = [{"text": "v1", "score": 0.8, "source": "d"}]
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=hits, scroll_hits=[{"text": "should-not-be-used"}]),
+        settings=settings,
+    )
+    out = rag.retrieve("广州车站行车岗位要什么学历")
+    assert out["aggregate"] is False
+    assert out["qdrant"] == hits
+
+
+def test_build_context_propagates_aggregate(settings):
+    jobs_hits = [{"text": f"h{i}", "score": 0.9, "source": "jobs.pdf"} for i in range(5)]
+    scroll = [{"text": f"chunk-{i}", "score": None, "source": "jobs.pdf"} for i in range(3)]
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=jobs_hits, scroll_hits=scroll),
+        neo4j=MockNeo4j(rels=[]),
+        settings=settings,
+    )
+    built = rag.build_context("列出所有岗位")
+    assert built["aggregate"] is True
+    assert built["used_rag"] is True
+    assert len(built["sources"]) == 3
+
+
+# --------------------------------------------------------------------------- #
+# conversation_id 透传（多对话隔离）
+# --------------------------------------------------------------------------- #
+def test_ingest_text_passes_conversation_id_to_qdrant(settings):
+    seen = {}
+
+    class Q(MockQdrant):
+        def upsert(self, texts, metadatas=None):
+            seen["meta"] = metadatas
+            return len(texts)
+
+    rag = _make_rag(qdrant=Q(), settings=settings)
+    rag.ingest_text("内容", source="d.pdf", owner="alice", conversation_id="c1")
+    assert seen["meta"][0]["conversation_id"] == "c1"
+
+
+def test_retrieve_passes_conversation_id(settings):
+    class Q(MockQdrant):
+        def search(self, query, top_k=None, owner=None, conversation_id=None):
+            return [{"text": str(conversation_id), "score": 0.9, "source": "d"}]
+
+    rag = _make_rag(qdrant=Q(), settings=settings)
+    out = rag.retrieve("q", owner="alice", conversation_id="c1")
+    assert out["qdrant"][0]["text"] == "c1"
+
+
+def test_resolve_vector_hits_passes_conversation_to_scroll(settings):
+    seen = {}
+
+    class Q(MockQdrant):
+        def search(self, query, top_k=None, owner=None, conversation_id=None):
+            return [{"text": "h", "score": 0.9, "source": "d.pdf"}]
+
+        def scroll_by_source(self, source, owner=None, conversation_id=None, limit=None):
+            seen["conv"] = conversation_id
+            return [{"text": "full", "score": None, "source": source}]
+
+    rag = _make_rag(qdrant=Q(), neo4j=MockNeo4j(rels=[]), settings=settings)
+    rag.retrieve("列出所有岗位", owner="alice", conversation_id="c1")
+    assert seen["conv"] == "c1"
+
+
+def test_delete_document_passes_conversation_id(settings):
+    seen = {}
+
+    class Q(MockQdrant):
+        def delete_by_source(self, source, owner=None, conversation_id=None):
+            seen["q"] = (source, conversation_id)
+            return 1
+
+    class N(MockNeo4j):
+        def delete_by_source(self, source):
+            seen["n_source"] = source
+            return 0
+
+    rag = _make_rag(qdrant=Q(), neo4j=N(), settings=settings)
+    rag.delete_document("d.pdf", owner="alice", conversation_id="c1")
+    assert seen["q"] == ("d.pdf", "c1")
+    # Neo4j 来源标记含对话维度
+    assert seen["n_source"] == "alice::c1::d.pdf"
+
+
+def test_delete_conversation_calls_both_stores(settings):
+    seen = {}
+
+    class Q(MockQdrant):
+        def delete_by_conversation(self, owner, conversation_id):
+            seen["q"] = (owner, conversation_id)
+            return 7
+
+    class N(MockNeo4j):
+        def delete_by_conversation(self, owner, conversation_id):
+            seen["n"] = (owner, conversation_id)
+            return 3
+
+    rag = _make_rag(qdrant=Q(), neo4j=N(), settings=settings)
+    out = rag.delete_conversation("alice", "c1")
+    assert out == {"chunks": 7, "relations": 3}
+    assert seen["q"] == ("alice", "c1") and seen["n"] == ("alice", "c1")
 
 
 def test_ingest_text_requires_nonempty(settings):

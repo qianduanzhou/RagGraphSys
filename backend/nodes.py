@@ -42,6 +42,8 @@ class GraphState(TypedDict, total=False):
     iterations: int
     streaming: bool
     owner: str
+    conversation_id: str  # 多对话隔离：检索按 (owner, conversation_id) 过滤
+    aggregate: bool  # 聚合型查询：已整文档拉取，生成时需放宽输出 token 上限
 
 
 class GraphNodes:
@@ -79,6 +81,7 @@ class GraphNodes:
                 state["question"],
                 self.settings.qdrant_top_k,
                 owner=state.get("owner"),
+                conversation_id=state.get("conversation_id"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("qdrant_node failed: %s", exc)
@@ -96,6 +99,7 @@ class GraphNodes:
                 keywords,
                 limit=self.settings.qdrant_top_k,
                 owner=state.get("owner"),
+                conversation_id=state.get("conversation_id"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("neo4j_node failed: %s", exc)
@@ -110,16 +114,22 @@ class GraphNodes:
         vector_hits = state.get("qdrant_results", []) or []
         graph_hits = state.get("neo4j_results", []) or []
 
+        # 聚合型查询：必要时把向量命中改写为整文档分片（score=None）
+        vector_hits, aggregate = self.rag.resolve_vector_hits(
+            state.get("question", ""), vector_hits,
+            owner=state.get("owner"), conversation_id=state.get("conversation_id"),
+        )
+
         context, sources = merge_results(
             vector_hits,
             graph_hits,
             score_threshold=self.settings.qdrant_score_threshold,
         )
         logger.info(
-            "merge_node: %d sources (qdrant_raw=%d, neo4j=%d, threshold=%.2f)",
-            len(sources), len(vector_hits), len(graph_hits), self.settings.qdrant_score_threshold,
+            "merge_node: %d sources (qdrant=%d, neo4j=%d, threshold=%.2f, aggregate=%s)",
+            len(sources), len(vector_hits), len(graph_hits), self.settings.qdrant_score_threshold, aggregate,
         )
-        return {"context": context, "sources": sources, "used_rag": bool(sources)}
+        return {"context": context, "sources": sources, "used_rag": bool(sources), "aggregate": aggregate}
 
     # ------------------------------------------------------------------ #
     # llm_node — 生成回答
@@ -162,6 +172,9 @@ class GraphNodes:
 
         messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": question}]
 
+        # 聚合型回答（如列出全部岗位）篇幅长，放宽输出 token 上限；否则沿用默认。
+        gen_max_tokens = self.settings.llm_max_tokens_aggregate if state.get("aggregate") else None
+
         try:
             if state.get("streaming"):
                 # 按字符流式生成；通过 langgraph 的 StreamWriter 把每个 token 作为
@@ -169,12 +182,12 @@ class GraphNodes:
                 # 同时累积完整回答供下游状态使用。
                 writer = get_stream_writer()
                 buffer: List[str] = []
-                for token in self.llm.chat_stream(messages):
+                for token in self.llm.chat_stream(messages, max_tokens=gen_max_tokens):
                     buffer.append(token)
                     writer({"type": "delta", "text": token})
                 answer = "".join(buffer)
             else:
-                answer = self.llm.chat(messages)
+                answer = self.llm.chat(messages, max_tokens=gen_max_tokens)
         except Exception as exc:  # noqa: BLE001
             logger.exception("llm_node generation failed: %s", exc)
             answer = f"抱歉，生成回答时出错：{exc}"
