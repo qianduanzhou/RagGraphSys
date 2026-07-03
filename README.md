@@ -166,6 +166,8 @@ npm run dev                   # 开发服务器 http://localhost:5173
 | `LLM_API_KEY` | OpenAI 兼容 API Key，**必填** | — |
 | `LLM_BASE_URL` | 模型接口地址 | `https://open.bigmodel.cn/api/paas/v4/` |
 | `LLM_MODEL` | 对话模型 | `glm-5.2` |
+| `EMBEDDING_API_KEY` | Embedding 专用 Key；留空则回退到 `LLM_API_KEY` | — |
+| `EMBEDDING_BASE_URL` | Embedding 接口地址（可与 LLM 不同厂商） | `https://open.bigmodel.cn/api/paas/v4/` |
 | `EMBEDDING_MODEL` | 向量化模型 | `embedding-3` |
 | `EMBEDDING_DIMENSION` | 向量维度 | `2048` |
 | `LLM_REQUEST_TIMEOUT` | 单次 LLM 请求超时（秒） | `60` |

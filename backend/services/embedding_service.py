@@ -30,15 +30,18 @@ class EmbeddingService:
 
         # 直接以参数形式把 OpenAI 兼容端点传给 OpenAIEmbeddings
         # （与 ChatOpenAI 同源），避免向进程级 os.environ 写入凭据。
+        # embedding 走独立的 base_url；api_key 留空则回退到 llm_api_key，
+        # 这样「embedding 与 LLM 同厂商」的部署无需重复填写 key。
+        embedding_api_key = settings.embedding_api_key or settings.llm_api_key
         self.embeddings = OpenAIEmbeddings(
             model=settings.embedding_model,
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
+            api_key=embedding_api_key,
+            base_url=settings.embedding_base_url,
         )
         logger.info(
             "Embedding 初始化完成：model=%s，base_url=%s",
             settings.embedding_model,
-            settings.llm_base_url,
+            settings.embedding_base_url,
         )
 
     @timing
