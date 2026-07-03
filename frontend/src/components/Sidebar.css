@@ -299,8 +299,8 @@
   background: transparent;
 }
 
-/* 文档行多选 */
-.doc-list .doc-item {
+/* 文档行多选：仅选择模式下整行可点 */
+.doc-list .doc-item.is-selectable {
   cursor: pointer;
 }
 .doc-item.selected {

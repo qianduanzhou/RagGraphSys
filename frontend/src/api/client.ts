@@ -1,17 +1,14 @@
 import type {
-  BatchDeleteResponse,
   BatchIngestResponse,
   AuthResponse,
-  ChatHistoryItem,
   ChatMode,
-  ChatResponse,
+  Conversation,
+  ConversationSummary,
   DeleteDocResponse,
   HealthResponse,
-  IngestResponse,
   NodeUpdate,
   SourceRef,
   StreamCallbacks,
-  UploadedDoc,
 } from "../types";
 
 const BASE = "/api";
@@ -82,87 +79,6 @@ export async function fetchCurrentUser(): Promise<{ username: string }> {
   return res.json();
 }
 
-export async function chat(
-  message: string,
-  history: ChatHistoryItem[],
-  mode: ChatMode = "rag"
-): Promise<ChatResponse> {
-  const res = await fetch(`${BASE}/chat`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ message, history, mode }),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
-export async function ingestText(
-  text: string,
-  source = "manual"
-): Promise<IngestResponse> {
-  const res = await fetch(`${BASE}/ingest`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ text, source }),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
-export async function ingestFile(file: File): Promise<IngestResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${BASE}/ingest/file`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
-/** 批量上传多个文件（或整个文件夹的所有文件）。 */
-export async function ingestFiles(files: File[]): Promise<BatchIngestResponse> {
-  const form = new FormData();
-  for (const f of files) form.append("files", f, f.name);
-  const res = await fetch(`${BASE}/ingest/files`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
-/** 拉取已入库文档列表（持久化在 Qdrant，刷新界面后仍可看到）。 */
-export async function fetchDocs(): Promise<UploadedDoc[]> {
-  const res = await fetch(`${BASE}/docs`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
-/** 删除指定来源的文档（清除 Qdrant 分片 + Neo4j 图谱关系）。 */
-export async function deleteDoc(source: string): Promise<DeleteDocResponse> {
-  const res = await fetch(`${BASE}/docs/delete`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ source }),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
-/** 批量删除多个文档（单次请求、逐项容错；返回每个文档的 ok/failed 明细）。 */
-export async function deleteDocsBatch(sources: string[]): Promise<BatchDeleteResponse> {
-  const res = await fetch(`${BASE}/docs/delete/batch`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ sources }),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${BASE}/health`, { headers: authHeaders() });
   if (!res.ok) throw new Error(await parseError(res));
@@ -180,22 +96,8 @@ type StreamFrame =
   | { type: "done" }
   | { type: "error"; message?: string };
 
-export async function chatStream(
-  message: string,
-  history: ChatHistoryItem[],
-  cb: StreamCallbacks,
-  mode: ChatMode = "rag"
-): Promise<void> {
-  const res = await fetch(`${BASE}/chat/stream`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ message, history, mode }),
-  });
-  if (!res.ok) {
-    cb.onError?.(await parseError(res));
-    return;
-  }
-
+/** 消费一个已就绪的 SSE 响应流，按帧分发到回调。 */
+async function consumeChatStream(res: Response, cb: StreamCallbacks): Promise<void> {
   const reader = res.body?.getReader();
   if (!reader) {
     cb.onError?.("服务未返回响应内容");
@@ -243,4 +145,98 @@ export async function chatStream(
       }
     }
   }
+}
+
+// ------------------------------------------------------------------
+// 对话管理（多对话：CRUD + 文档 + 对话级流式问答）
+// ------------------------------------------------------------------
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const res = await fetch(`${BASE}/conversations`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function createConversation(title?: string): Promise<Conversation> {
+  const res = await fetch(`${BASE}/conversations`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ title: title ?? null }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function getConversation(id: string): Promise<Conversation> {
+  const res = await fetch(`${BASE}/conversations/${id}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function renameConversation(id: string, title: string): Promise<Conversation> {
+  const res = await fetch(`${BASE}/conversations/${id}`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/conversations/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
+/** 往指定对话上传文档（多文件；zip 由后端解包）。 */
+export async function uploadConversationDocs(
+  id: string,
+  files: File[]
+): Promise<BatchIngestResponse> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+  const res = await fetch(`${BASE}/conversations/${id}/documents`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/** 删除对话内某文档。 */
+export async function deleteConversationDoc(
+  id: string,
+  source: string
+): Promise<DeleteDocResponse> {
+  const res = await fetch(`${BASE}/conversations/${id}/documents`, {
+    method: "DELETE",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ source }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/**
+ * 对话级流式问答：后端从对话记录加载历史并写回，前端只发 message + mode。
+ */
+export async function chatStreamInConversation(
+  conversationId: string,
+  message: string,
+  cb: StreamCallbacks,
+  mode: ChatMode = "rag"
+): Promise<void> {
+  const res = await fetch(`${BASE}/conversations/${conversationId}/chat/stream`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ message, mode }),
+  });
+  if (!res.ok) {
+    cb.onError?.(await parseError(res));
+    return;
+  }
+  await consumeChatStream(res, cb);
 }

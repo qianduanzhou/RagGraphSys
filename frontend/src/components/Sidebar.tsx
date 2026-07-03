@@ -1,32 +1,41 @@
 import { useRef, useState } from "react";
-import { Database, FileArchive, FileText, GitBranch, RefreshCw, Trash2, UploadCloud } from "lucide-react";
-import type { BatchDeleteResponse, BatchIngestResponse, HealthResponse, UploadedDoc } from "../types";
+import { CheckSquare, Database, FileArchive, FileText, GitBranch, RefreshCw, Trash2, UploadCloud, X } from "lucide-react";
+import type {
+  BatchIngestResponse,
+  ConversationDoc,
+  ConversationSummary,
+  HealthResponse,
+} from "../types";
+import ConversationList from "./ConversationList";
+import { ConfirmDialog } from "./Dialog";
 import "./Sidebar.css";
 
 // 与后端 services/file_parser.ALLOWED_EXTS 保持一致（语义同一套）。
-// 文本/代码类直接解码，CSV/Excel/PDF/Word 由后端解析；zip 由后端解包。
 const ALLOWED_EXT = [
   ".txt", ".md", ".markdown", ".csv", ".json", ".log", ".rst",
-  // 前端 / Web
   ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".scss", ".vue", ".svelte",
-  // 编程语言
   ".py", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs", ".kt", ".scala",
   ".swift", ".rb", ".php", ".lua", ".dart", ".r",
-  // 脚本 / 配置 / 数据
   ".sh", ".bash", ".ps1", ".sql", ".xml", ".yaml", ".yml", ".toml", ".ini", ".env",
-  // 文档（后端解析）
   ".pdf", ".docx", ".xlsx", ".xls",
-  // 压缩包（后端展开为成员）
   ".zip",
 ];
 
 interface Props {
-  docs: UploadedDoc[];
+  conversations: ConversationSummary[];
+  currentId: string | null;
+  onSelectConversation: (id: string) => void;
+  onCreateConversation: () => void;
+  onRenameConversation: (id: string, title: string) => void;
+  /** 批量删除对话（单删即长度 1）。 */
+  onBatchDeleteConversations: (ids: string[]) => void;
+  docs: ConversationDoc[];
   health: HealthResponse | null;
   onUploadFiles: (files: File[]) => Promise<BatchIngestResponse>;
-  onDeleteDoc: (source: string) => Promise<void>;
-  onDeleteDocsBatch: (sources: string[]) => Promise<BatchDeleteResponse>;
+  /** 批量删除文档（单删即长度 1）。 */
+  onDeleteDocs: (sources: string[]) => Promise<void>;
   onRefresh: () => void;
+  disabled?: boolean;
 }
 
 type UploadState = "idle" | "uploading" | "done" | "error";
@@ -36,15 +45,11 @@ function isAllowed(name: string): boolean {
   return ALLOWED_EXT.some((ext) => lower.endsWith(ext));
 }
 
-/** 多选 / 拖拽会混入二进制 / 系统文件，前端先按扩展名过滤一道。 */
 function filterAllowed(fileList: FileList | null | undefined): File[] {
   if (!fileList) return [];
-  return Array.from(fileList).filter(
-    (f) => isAllowed(f.name) && f.size > 0
-  );
+  return Array.from(fileList).filter((f) => isAllowed(f.name) && f.size > 0);
 }
 
-/** 把秒级时间戳格式化为 MM-DD HH:mm；无时间戳返回空串。 */
 function formatTime(at: number): string {
   if (!at) return "";
   const d = new Date(at * 1000);
@@ -53,33 +58,34 @@ function formatTime(at: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDeleteDocsBatch, onRefresh }: Props) {
+export default function Sidebar({
+  conversations,
+  currentId,
+  onSelectConversation,
+  onCreateConversation,
+  onRenameConversation,
+  onBatchDeleteConversations,
+  docs,
+  health,
+  onUploadFiles,
+  onDeleteDocs,
+  onRefresh,
+  disabled,
+}: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [state, setState] = useState<UploadState>("idle");
   const [notice, setNotice] = useState<string | null>(null);
+  // 正在删除的文档名（单删时用于该行 spinner）；批删时为 null。
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [deletingBatch, setDeletingBatch] = useState(false);
-  const allSelected = docs.length > 0 && selected.size === docs.length;
 
-  function toggleSelect(name: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  }
+  // 文档多选删除
+  const [docSelectMode, setDocSelectMode] = useState(false);
+  const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
+  const [deleteDocTargets, setDeleteDocTargets] = useState<{ sources: string[]; label: string } | null>(null);
 
-  function toggleAll() {
-    setSelected((prev) =>
-      docs.length > 0 && prev.size === docs.length
-        ? new Set()
-        : new Set(docs.map((d) => d.name))
-    );
-  }
+  const allDocsSelected = docs.length > 0 && selectedDocs.size === docs.length;
 
   async function upload(files: File[]) {
     if (files.length === 0) {
@@ -91,11 +97,9 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
     setNotice(`正在入库 ${files.length} 个文件…`);
     try {
       const res = await onUploadFiles(files);
-      setState(res.failed > 0 ? "done" : "done");
+      setState("done");
       const okMsg = `已入库 ${res.succeeded} 个文件，共 ${res.chunks} 片段`;
-      setNotice(
-        res.failed > 0 ? `${okMsg}（${res.failed} 个失败）` : okMsg
-      );
+      setNotice(res.failed > 0 ? `${okMsg}（${res.failed} 个失败）` : okMsg);
     } catch (err) {
       setState("error");
       setNotice((err as Error).message || "上传失败");
@@ -106,22 +110,23 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
     upload(filterAllowed(files));
   }
 
-  async function handleDelete(name: string) {
-    if (!window.confirm(`确定删除文档「${name}」？\n将同时清除其向量分片与图谱关系，不可恢复。`)) {
-      return;
-    }
-    setDeleting(name);
+  // 文档删除：单删 / 批删统一走 ConfirmDialog → onDeleteDocs
+  function requestDeleteDocs(sources: string[], label: string) {
+    setDeleteDocTargets({ sources, label });
+  }
+
+  async function confirmDeleteDocs() {
+    if (!deleteDocTargets) return;
+    const { sources, label } = deleteDocTargets;
+    setDeleteDocTargets(null);
+    setDeleting(sources.length === 1 ? sources[0] : null);
     try {
-      await onDeleteDoc(name);
-      // 单删后同步移出选中集合，避免计数/全选态指向已不存在文档。
-      setSelected((prev) => {
-        const next = new Set(prev);
-        next.delete(name);
-        return next;
-      });
+      await onDeleteDocs(sources);
       setState("done");
-      setNotice(`已删除：${name}`);
+      setNotice(`已删除 ${label}`);
       setTimeout(() => setNotice(null), 2600);
+      setSelectedDocs(new Set());
+      setDocSelectMode(false);
     } catch (err) {
       setState("error");
       setNotice((err as Error).message || "删除失败");
@@ -130,29 +135,24 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
     }
   }
 
-  async function handleBatchDelete() {
-    if (selected.size === 0) return;
-    if (
-      !window.confirm(
-        `确定删除选中的 ${selected.size} 个文档？\n将同时清除其向量分片与图谱关系，不可恢复。`
-      )
-    ) {
-      return;
-    }
-    setDeletingBatch(true);
-    try {
-      const res = await onDeleteDocsBatch([...selected]);
-      setSelected(new Set());
-      setState(res.failed > 0 ? "error" : "done");
-      const okMsg = `已删除 ${res.deleted} 个文档`;
-      setNotice(res.failed > 0 ? `${okMsg}（${res.failed} 个失败）` : okMsg);
-      setTimeout(() => setNotice(null), 3000);
-    } catch (err) {
-      setState("error");
-      setNotice((err as Error).message || "批量删除失败");
-    } finally {
-      setDeletingBatch(false);
-    }
+  function enterDocSelect() {
+    setSelectedDocs(new Set());
+    setDocSelectMode(true);
+  }
+  function exitDocSelect() {
+    setSelectedDocs(new Set());
+    setDocSelectMode(false);
+  }
+  function toggleDocSelect(name: string) {
+    setSelectedDocs((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+  function toggleAllDocs() {
+    setSelectedDocs(allDocsSelected ? new Set() : new Set(docs.map((d) => d.name)));
   }
 
   return (
@@ -180,10 +180,21 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
         <p className="brand-sub">Hybrid Graph + Vector RAG</p>
       </div>
 
-      {/* 上传 */}
+      {/* 对话列表 */}
+      <ConversationList
+        conversations={conversations}
+        currentId={currentId}
+        onSelect={onSelectConversation}
+        onCreate={onCreateConversation}
+        onRename={onRenameConversation}
+        onBatchDelete={onBatchDeleteConversations}
+        disabled={disabled}
+      />
+
+      {/* 当前对话文档上传 */}
       <div className="side-section">
         <div className="side-label">
-          <UploadCloud size={14} /> 知识库上传
+          <UploadCloud size={14} /> 当前对话 · 上传
         </div>
         <div
           className={`dropzone ${dragging ? "is-drag" : ""} ${state}`}
@@ -197,7 +208,7 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
             setDragging(false);
             handlePick(e.dataTransfer.files);
           }}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => !disabled && fileInputRef.current?.click()}
         >
           <input
             ref={fileInputRef}
@@ -207,7 +218,7 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
             hidden
             onChange={(e) => {
               handlePick(e.target.files);
-              e.target.value = ""; // 允许重复选择同一文件
+              e.target.value = "";
             }}
           />
           <input
@@ -229,11 +240,10 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
             <>
               <UploadCloud size={22} />
               <span className="dz-title">拖入文件 / 点击多选上传</span>
-              <span className="dz-hint">代码 · PDF · Word · Excel · Markdown · zip 压缩包</span>
+              <span className="dz-hint">归属当前对话 · 代码/PDF/Word/Excel/Markdown/zip</span>
             </>
           )}
         </div>
-        {/* zip 压缩包上传：单独按钮，后端解包为成员逐个入库 */}
         <button
           type="button"
           className="folder-btn"
@@ -241,63 +251,84 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
             e.stopPropagation();
             zipInputRef.current?.click();
           }}
-          disabled={state === "uploading"}
-          title="上传 zip 压缩包，后端自动解包入库（保留目录结构）"
+          disabled={state === "uploading" || disabled}
+          title="上传 zip 压缩包，后端自动解包入库"
         >
           <FileArchive size={14} /> 上传 zip 压缩包
         </button>
         {notice && <div className={`notice ${state}`}>{notice}</div>}
       </div>
 
-      {/* 文档列表 */}
+      {/* 当前对话文档列表 */}
       <div className="side-section side-grow">
         <div className="side-label">
-          <FileText size={14} /> 已入库文档
+          <FileText size={14} /> 当前对话文档
           <span className="side-count">{docs.length}</span>
+          {!docSelectMode ? (
+            <button
+              type="button"
+              className="conv-new-btn"
+              onClick={enterDocSelect}
+              disabled={disabled || docs.length === 0}
+              title="多选删除"
+            >
+              <CheckSquare size={13} /> 选择
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="conv-new-btn conv-exit-select"
+              onClick={exitDocSelect}
+              title="退出选择"
+            >
+              <X size={13} /> 完成
+            </button>
+          )}
         </div>
-        {docs.length > 0 && (
+
+        {docSelectMode && (
           <div className="batch-bar">
-            <label className="batch-select-all">
-              <input
-                type="checkbox"
-                checked={allSelected}
-                onChange={toggleAll}
-                disabled={deletingBatch}
-              />
-              <span>{selected.size > 0 ? `已选 ${selected.size}/${docs.length}` : "全选"}</span>
-            </label>
+            <div className="batch-select-all" onClick={toggleAllDocs}>
+              <input type="checkbox" checked={allDocsSelected} readOnly />
+              <span>{allDocsSelected ? "取消全选" : "全选"}</span>
+            </div>
+            <span className="batch-count">已选 {selectedDocs.size}</span>
             <button
               type="button"
               className="batch-btn"
-              onClick={handleBatchDelete}
-              disabled={selected.size === 0 || deletingBatch}
-              title="删除选中文档"
+              disabled={selectedDocs.size === 0 || disabled}
+              onClick={() => requestDeleteDocs([...selectedDocs], `${selectedDocs.size} 个文档`)}
             >
-              {deletingBatch ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}
-              批量删除
+              <Trash2 size={12} /> 删除
             </button>
           </div>
         )}
+
         <div className="doc-list">
           {docs.length === 0 ? (
-            <p className="empty">暂无文档，上传后将自动切分入库。</p>
+            <p className="empty">当前对话暂无文档，上传后自动切分入库。</p>
           ) : (
             docs.map((d, i) => {
-              const checked = selected.has(d.name);
+              const isSel = selectedDocs.has(d.name);
+              const isDeleting = deleting === d.name;
               return (
                 <div
-                  className={`doc-item ${checked ? "selected" : ""}`}
+                  className={`doc-item ${isSel ? "selected" : ""} ${
+                    docSelectMode ? "is-selectable" : ""
+                  }`}
                   key={`${d.name}-${d.at}-${i}`}
-                  onClick={() => toggleSelect(d.name)}
+                  onClick={() => {
+                    if (docSelectMode) toggleDocSelect(d.name);
+                  }}
                 >
-                  <input
-                    type="checkbox"
-                    className="doc-check"
-                    checked={checked}
-                    onChange={() => toggleSelect(d.name)}
-                    onClick={(e) => e.stopPropagation()}
-                    disabled={deleting === d.name || deletingBatch}
-                  />
+                  {docSelectMode && (
+                    <input
+                      type="checkbox"
+                      className="doc-check"
+                      checked={isSel}
+                      readOnly
+                    />
+                  )}
                   <FileText size={15} className="doc-icon" />
                   <div className="doc-meta">
                     <span className="doc-name" title={d.name}>
@@ -307,18 +338,20 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
                       {d.chunks} 片段{formatTime(d.at) ? ` · ${formatTime(d.at)}` : ""}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    className="doc-del"
-                    title="删除该文档"
-                    disabled={deleting === d.name || deletingBatch}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(d.name);
-                    }}
-                  >
-                    {deleting === d.name ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}
-                  </button>
+                  {!docSelectMode && (
+                    <button
+                      type="button"
+                      className="doc-del"
+                      title="从当前对话删除该文档"
+                      disabled={isDeleting || disabled}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requestDeleteDocs([d.name], `「${d.name}」`);
+                      }}
+                    >
+                      {isDeleting ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}
+                    </button>
+                  )}
                 </div>
               );
             })
@@ -352,6 +385,17 @@ export default function Sidebar({ docs, health, onUploadFiles, onDeleteDoc, onDe
           </span>
         </div>
       </div>
+
+      {/* 文档删除确认弹框 */}
+      <ConfirmDialog
+        open={deleteDocTargets !== null}
+        title="删除文档"
+        danger
+        message={`确定删除${deleteDocTargets?.label ?? ""}？\n将同时清除其向量分片与图谱关系。`}
+        confirmText="删除"
+        onCancel={() => setDeleteDocTargets(null)}
+        onConfirm={confirmDeleteDocs}
+      />
     </aside>
   );
 }

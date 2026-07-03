@@ -151,4 +151,35 @@ export interface AuthSession {
   token: string;
 }
 
+// ---- 对话（多对话：每对话独立文档列表 + 后端持久化历史）----
+export interface ConversationDoc {
+  name: string;
+  chunks: number;
+  at: number;
+}
+
+export interface ConversationMessage {
+  role: string;
+  content: string;
+  at?: number;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: number;
+  document_count: number;
+  preview: string;
+}
+
+export interface Conversation {
+  id: string;
+  owner: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  documents: ConversationDoc[];
+  messages: ConversationMessage[];
+}
+
 export type AuthResponse = AuthSession;
