@@ -5,7 +5,7 @@
 .dlg-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 10, 14, 0.72);
+  background: var(--overlay-bg);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   display: grid;
@@ -122,10 +122,10 @@
 }
 .dlg-btn-ghost:hover:not(:disabled) {
   color: var(--text);
-  border-color: #313c4a;
+  border-color: var(--scrollbar-hover);
 }
 .dlg-btn-primary {
-  color: #1a1206;
+  color: var(--button-text-on-accent);
   background: var(--accent);
 }
 .dlg-btn-primary:hover:not(:disabled) {
@@ -136,5 +136,5 @@
   background: var(--danger);
 }
 .dlg-btn-danger:hover:not(:disabled) {
-  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.22);
+  box-shadow: 0 0 0 3px var(--danger-soft);
 }

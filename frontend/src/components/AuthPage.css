@@ -4,8 +4,8 @@
   place-items: center;
   padding: 24px;
   background:
-    radial-gradient(900px 520px at 78% -12%, rgba(255, 180, 84, 0.09), transparent 62%),
-    radial-gradient(680px 460px at 8% 106%, rgba(61, 214, 140, 0.08), transparent 58%),
+    radial-gradient(900px 520px at 78% -12%, var(--body-glow-accent), transparent 62%),
+    radial-gradient(680px 460px at 8% 106%, var(--body-glow-graph), transparent 58%),
     var(--bg-deep);
 }
 
@@ -15,7 +15,7 @@
   flex-direction: column;
   gap: 18px;
   padding: 26px;
-  background: rgba(18, 22, 29, 0.94);
+  background: var(--auth-panel-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -88,7 +88,7 @@
 }
 
 .auth-tabs button.active {
-  color: #1a1208;
+  color: var(--button-text-on-accent);
   background: var(--accent);
 }
 
@@ -111,7 +111,7 @@
   padding: 0 12px;
   min-height: 44px;
   color: var(--text-dim);
-  background: #0c1016;
+  background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
@@ -127,11 +127,11 @@
   width: 100%;
   min-width: 0;
   color: var(--text);
-  background: #0c1016;
+  background: var(--input-bg);
   border: none;
   outline: none;
   appearance: none;
-  color-scheme: dark;
+  color-scheme: inherit;
   caret-color: var(--accent);
   font: inherit;
 }
@@ -170,27 +170,27 @@
 .auth-input input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--text);
   caret-color: var(--accent);
-  -webkit-box-shadow: 0 0 0 1000px #0c1016 inset;
+  -webkit-box-shadow: 0 0 0 1000px var(--input-bg) inset;
 }
 
 .auth-message {
   padding: 8px 10px;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid rgba(255, 180, 84, 0.28);
+  border: 1px solid var(--accent-border);
   border-radius: var(--radius-sm);
   font-size: 12.5px;
 }
 
 .auth-message.error {
   color: var(--danger);
-  background: rgba(255, 107, 107, 0.12);
-  border-color: rgba(255, 107, 107, 0.32);
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
 }
 
 .auth-submit {
   min-height: 44px;
-  color: #1a1208;
+  color: var(--button-text-on-accent);
   background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);

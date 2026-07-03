@@ -6,10 +6,10 @@
   animation: popIn 0.25s ease both;
 }
 .src.qdrant {
-  border-color: rgba(255, 180, 84, 0.32);
+  border-color: var(--accent-border);
 }
 .src.neo4j {
-  border-color: rgba(61, 214, 140, 0.32);
+  border-color: var(--graph-border);
 }
 
 .src-head {

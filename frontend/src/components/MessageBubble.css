@@ -19,7 +19,7 @@
 }
 .msg-user .msg-avatar {
   background: var(--user-bubble);
-  border-color: rgba(255, 180, 84, 0.4);
+  border-color: var(--accent-border);
   color: var(--accent);
 }
 
@@ -44,7 +44,7 @@
 }
 .msg-user .msg-text {
   background: var(--user-bubble);
-  border: 1px solid rgba(255, 180, 84, 0.28);
+  border: 1px solid var(--accent-border);
   padding: 11px 15px;
   border-radius: 4px var(--radius) var(--radius) var(--radius);
   display: inline-block;
@@ -52,8 +52,8 @@
 
 .msg.is-error .msg-text {
   color: var(--danger);
-  background: rgba(255, 107, 107, 0.08);
-  border: 1px solid rgba(255, 107, 107, 0.3);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
   padding: 11px 15px;
   border-radius: var(--radius);
   font-family: var(--font-mono);
@@ -117,7 +117,7 @@
   border-radius: 20px;
   background: var(--accent-soft);
   color: var(--accent);
-  border: 1px solid rgba(255, 180, 84, 0.3);
+  border: 1px solid var(--accent-border);
 }
 .msg-sources-list {
   display: flex;
@@ -159,7 +159,7 @@
 }
 .pstep.active {
   color: var(--accent);
-  border-color: rgba(255, 180, 84, 0.5);
+  border-color: var(--accent-border);
   background: var(--accent-soft);
 }
 .pstep.active .pstep-dot {
@@ -169,7 +169,7 @@
 }
 .pstep.done {
   color: var(--graph);
-  border-color: rgba(61, 214, 140, 0.4);
+  border-color: var(--graph-border);
 }
 .pstep.done .pstep-dot {
   background: var(--graph);
@@ -196,7 +196,7 @@
 }
 .mode-switch button.active {
   background: var(--accent, #2563eb);
-  color: #fff;
+  color: var(--button-text-on-accent);
 }
 .mode-switch button:disabled {
   opacity: 0.45;
@@ -205,7 +205,7 @@
 
 /* web 来源徽章：渲染为可点击链接 */
 .source-badge.web {
-  color: var(--link, #2563eb);
+  color: var(--link);
   text-decoration: none;
   border: 1px solid var(--border, #d0d7de);
   border-radius: 6px;
@@ -214,7 +214,7 @@
   align-self: flex-start;
 }
 .source-badge.web:hover {
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--accent-soft);
 }
 
 /* 多智能体原始回答折叠面板 */

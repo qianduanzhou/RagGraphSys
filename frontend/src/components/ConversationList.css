@@ -47,11 +47,11 @@
   border: 1px solid transparent;
 }
 .conv-item:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--item-hover);
 }
 .conv-item.active {
-  background: rgba(255, 180, 84, 0.1);
-  border-color: rgba(255, 180, 84, 0.35);
+  background: var(--item-active);
+  border-color: var(--accent-border);
 }
 
 .conv-meta {
@@ -95,11 +95,11 @@
   display: inline-flex;
 }
 .conv-act:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--item-hover);
   color: var(--text, #e6edf3);
 }
 .conv-act.conv-del:hover:not(:disabled) {
-  color: #ff6b6b;
+  color: var(--danger);
 }
 .conv-act:disabled {
   opacity: 0.4;
@@ -109,8 +109,8 @@
 /* ---------- 选择模式 / 批量删除 ---------- */
 /* 批量栏 .batch-bar / .batch-select-all / .batch-btn 复用 Sidebar.css 的全局定义 */
 .conv-item.selected {
-  background: rgba(255, 180, 84, 0.12);
-  border-color: rgba(255, 180, 84, 0.4);
+  background: var(--item-active);
+  border-color: var(--accent-border);
 }
 .conv-check {
   flex-shrink: 0;

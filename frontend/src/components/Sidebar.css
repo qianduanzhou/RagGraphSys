@@ -3,7 +3,7 @@
   flex-direction: column;
   height: 100vh;
   padding: 22px 18px 16px;
-  background: linear-gradient(180deg, rgba(18, 22, 29, 0.92), rgba(11, 14, 19, 0.92));
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   overflow: hidden;
   animation: fadeUp 0.5s ease both;
@@ -142,7 +142,7 @@
   animation: fadeIn 0.3s ease;
 }
 .notice.error {
-  background: rgba(255, 107, 107, 0.12);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -245,7 +245,7 @@
 .doc-del:hover:not(:disabled) {
   color: var(--danger);
   border-color: var(--danger);
-  background: rgba(255, 107, 107, 0.1);
+  background: var(--danger-soft);
 }
 .doc-del:disabled {
   opacity: 0.6;
@@ -282,14 +282,14 @@
   font-size: 11px;
   font-weight: 600;
   color: var(--danger);
-  background: rgba(255, 107, 107, 0.1);
+  background: var(--danger-soft);
   border: 1px solid var(--danger);
   border-radius: 7px;
   cursor: pointer;
   transition: all 0.18s ease;
 }
 .batch-btn:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.18);
+  background: var(--danger-border);
 }
 .batch-btn:disabled {
   opacity: 0.4;
@@ -363,7 +363,7 @@
   color: var(--graph);
 }
 .pill.off {
-  background: rgba(255, 107, 107, 0.12);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 .status-num {

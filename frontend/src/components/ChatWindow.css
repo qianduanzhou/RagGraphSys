@@ -46,7 +46,7 @@
 .composer {
   border-top: 1px solid var(--border);
   padding: 14px 24px 18px;
-  background: rgba(11, 14, 19, 0.75);
+  background: var(--composer-bg);
   backdrop-filter: blur(8px);
 }
 .composer-box {
@@ -91,11 +91,11 @@
   border: none;
   border-radius: 10px;
   background: var(--accent);
-  color: #1a1208;
+  color: var(--button-text-on-accent);
   transition: all 0.18s ease;
 }
 .send-btn:hover:not(:disabled) {
-  background: #ffc278;
+  background: var(--accent);
   animation: glowPulse 1.6s infinite;
 }
 .send-btn:disabled {

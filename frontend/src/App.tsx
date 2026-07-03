@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Eraser, LogOut, Plus, UserCircle } from "lucide-react";
+import { Eraser, LogOut, Moon, Plus, Sun, UserCircle } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
 import AuthPage from "./components/AuthPage";
@@ -35,6 +35,10 @@ import {
 } from "./types";
 import "./App.css";
 
+type ThemeMode = "dark" | "light";
+
+const THEME_STORAGE_KEY = "hybrid-rag-theme";
+
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -44,13 +48,18 @@ const WELCOME: ChatMessage = {
   id: "welcome",
   role: "assistant",
   content:
-    "**你好，我是 Hybrid RAG 助手。**\n\n我通过 **Qdrant 语义检索** 与 **Neo4j 知识图谱** 双路召回，再由 **大模型** 自动自我反思。\n\n先在左侧当前对话里上传一份文档，然后向我一提问吧。",
+    "**你好，我是 Hybrid RAG 助手。**\n\n我通过 **Qdrant 语义检索** 与 **Neo4j 知识图谱** 双路召回，再由 **大模型** 自动自我反思。\n\n先在左侧当前对话里上传一份文档，然后向我提问吧。",
 };
 
 const initialSession = loadSession();
 setAuthToken(initialSession?.token ?? null);
 
-/** 把后端对话消息映射为界面消息；空对话前置一条欢迎语。 */
+function loadTheme(): ThemeMode {
+  if (typeof window === "undefined") return "dark";
+  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === "light" || saved === "dark" ? saved : "dark";
+}
+
 function toMessages(conv: Conversation | null): ChatMessage[] {
   const msgs: ChatMessage[] = (conv?.messages ?? []).map((m: ConversationMessage, i: number) => ({
     id: `${conv?.id ?? "c"}-${i}`,
@@ -69,8 +78,15 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [mode, setMode] = useState<ChatMode>("rag");
+  const [theme, setTheme] = useState<ThemeMode>(loadTheme);
   const [webSearchAvailable, setWebSearchAvailable] = useState<boolean>(true);
   const loadedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   const resetSession = useCallback(() => {
     setAuthToken(null);
@@ -100,7 +116,6 @@ export default function App() {
       setMessages(toMessages(conv));
       loadedRef.current = id;
     } catch {
-      // 选中失败（如已被删）：留空，上层会重选
       setCurrent(null);
       setMessages([WELCOME]);
     }
@@ -116,7 +131,7 @@ export default function App() {
       setConversations(list);
       await selectConversation(list[0].id);
     } catch {
-      // 忽略：未登录等
+      // 忽略：未登录或会话列表暂时不可用。
     }
   }, [selectConversation]);
 
@@ -173,7 +188,6 @@ export default function App() {
       const removed = new Set(ids);
       setConversations((prev) => {
         const next = prev.filter((c) => !removed.has(c.id));
-        // 当前对话在被删之列：选下一条，或新建
         if (currentId && removed.has(currentId)) {
           if (next.length > 0) {
             selectConversation(next[0].id);
@@ -211,7 +225,7 @@ export default function App() {
         )
       );
     } catch {
-      // 忽略
+      // 刷新失败时保留当前界面状态。
     }
   }, [currentId]);
 
@@ -300,7 +314,6 @@ export default function App() {
           },
           mode
         );
-        // 流结束后以服务端为准刷新（拿到持久化的 user+assistant + 自动改名 + 文档不变）
         await refreshCurrent();
       } finally {
         setStreaming(false);
@@ -332,8 +345,11 @@ export default function App() {
   );
 
   const handleClear = useCallback(() => {
-    // 清空当前对话的界面消息显示（仅本地视图；后端历史保留）
     setMessages([WELCOME]);
+  }, []);
+
+  const handleToggleTheme = useCallback(() => {
+    setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"));
   }, []);
 
   if (!session) {
@@ -341,6 +357,7 @@ export default function App() {
   }
 
   const docs: ConversationDoc[] = current?.documents ?? [];
+  const isLightTheme = theme === "light";
 
   return (
     <div className="app-shell">
@@ -371,6 +388,15 @@ export default function App() {
             <span className="user-chip">
               <UserCircle size={15} /> {session.username}
             </span>
+            <button
+              className="ghost-btn theme-toggle"
+              onClick={handleToggleTheme}
+              title={isLightTheme ? "切换到暗黑主题" : "切换到白色主题"}
+              aria-label={isLightTheme ? "切换到暗黑主题" : "切换到白色主题"}
+            >
+              {isLightTheme ? <Moon size={15} /> : <Sun size={15} />}
+              {isLightTheme ? "暗黑" : "白色"}
+            </button>
             <button
               className="ghost-btn"
               onClick={handleNewConversation}
