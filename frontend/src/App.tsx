@@ -4,14 +4,15 @@ import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
 import AuthPage from "./components/AuthPage";
 import {
-  chatStreamInConversation,
-  createConversation,
-  deleteConversation,
-  deleteConversationDoc,
-  fetchCurrentUser,
-  fetchHealth,
-  getConversation,
-  listConversations,
+ chatStreamInConversation,
+  clearConversation,
+ createConversation,
+ deleteConversation,
+ deleteConversationDoc,
+ fetchCurrentUser,
+ fetchHealth,
+ getConversation,
+ listConversations,
   loginAccount,
   registerAccount,
   renameConversation,
@@ -344,9 +345,22 @@ export default function App() {
     [currentId, refreshCurrent, refreshHealth]
   );
 
-  const handleClear = useCallback(() => {
-    setMessages([WELCOME]);
-  }, []);
+  const handleClear = useCallback(async () => {
+    if (!currentId) {
+      setMessages([WELCOME]);
+      return;
+    }
+    try {
+      const conv = await clearConversation(currentId);
+      setCurrent(conv);
+      setMessages(toMessages(conv));
+      setConversations((prev) =>
+        prev.map((c) => (c.id === currentId ? { ...c, preview: "", updated_at: conv.updated_at } : c))
+      );
+    } catch {
+      setMessages([WELCOME]);
+    }
+  }, [currentId]);
 
   const handleToggleTheme = useCallback(() => {
     setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"));

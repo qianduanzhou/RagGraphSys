@@ -1,8 +1,15 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # 后端生产编排：部署机只需要准备 .env，然后执行：
 #   docker compose --env-file .env -f docker-compose.yaml up -d
 # Compose 会按 .env 中的 IMAGE_PUSH_ADDRESS / IMAGE_NAME / IMAGE_TAG 拉取已推送的后端镜像，
 # 并在同一编排内启动生产 Qdrant 与 Neo4j。
+#
+# 固定项目名 name: raggraph —— Docker Compose 默认用 compose 文件所在目录名当项目名,
+# 卷的真实全名是 <项目名>_<卷名>(例如 raggraph_qdrant_data)。一旦部署目录改名/换位置,
+# 项目名就会变, 随之生成一套全新的空卷, 历史数据看起来就"消失"了。
+# 显式写死 name 后, 卷名恒定, 数据不再受部署目录影响。
+
+name: raggraph
 
 services:
   qdrant:
@@ -10,7 +17,14 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     networks: [rag-net]
-    restart: unless-stopped
+    restart: always
+    healthcheck:
+      # Qdrant 镜像无 curl/wget，用 bash /dev/tcp 探测 6333 端口是否已监听。
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   neo4j:
     image: neo4j:5.24
@@ -19,7 +33,15 @@ services:
     volumes:
       - neo4j_data:/data
     networks: [rag-net]
-    restart: unless-stopped
+    restart: always
+    healthcheck:
+      # Neo4j 镜像自带 wget；7474 的 HTTP 端点在数据库可服务后才返回 200。
+      # 冷启动（尤其带历史数据）需十几到几十秒，故给足 start_period 与重试次数。
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   backend:
     image: ${IMAGE_PUSH_ADDRESS}/${IMAGE_NAME}:${IMAGE_TAG}
@@ -32,9 +54,13 @@ services:
       - "${BACKEND_PORT:-7846}:8000"
     volumes:
       - backend_data:/app/data
-    depends_on: [qdrant, neo4j]
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
     networks: [rag-net]
-    restart: unless-stopped
+    restart: always
 
 volumes:
   backend_data:
@@ -44,6 +70,3 @@ volumes:
 networks:
   rag-net:
     name: rag-net
-
-
-

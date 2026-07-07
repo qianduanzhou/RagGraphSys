@@ -109,6 +109,17 @@ class ConversationService:
             del convs[conv_id]
             self._save(convs)
             return c
+    def clear_messages(self, owner: str, conv_id: str) -> Optional[Dict[str, Any]]:
+        """清空指定对话的消息历史（保留对话本身与文档清单）。"""
+        with self._lock:
+            convs = self._load()
+            c = convs.get(conv_id)
+            if not c or c.get("owner") != owner:
+                return None
+            c["messages"] = []
+            c["updated_at"] = int(time.time())
+            self._save(convs)
+            return c
 
     def append_message(
         self, owner: str, conv_id: str, role: str, content: str

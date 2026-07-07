@@ -367,8 +367,43 @@ docker compose --env-file .env -f docker-compose.yaml down
 
 - **Neo4j 首次启动需 20–30s**，期间后端日志出现 `Neo4j unavailable at startup` 属正常，DB 就绪后客户端惰性重连自动恢复。
 - **数据持久化**：`backend_data` 保存账号库，`qdrant_data` / `neo4j_data` 保存知识库；`make down` 不丢，只有 `docker compose down -v` 才删卷。
+- **卷名与项目名**：`docker-compose.yaml` 顶层已固定 `name: raggraph`，卷的真实全名恒为 `raggraph_qdrant_data` / `raggraph_neo4j_data` / `raggraph_backend_data`，不再受部署目录名影响。若从旧版本（卷名曾随目录名变化）升级，需把老卷数据迁移到新卷（见下方"老数据迁移"）。
 - **SSE 流式**：nginx 已配 `proxy_buffering off` + 300s 超时。
 - **生产 `.env` 注意**：`LLM_API_KEY` 走 `.env` 注入不入库；`CORS_ORIGINS` 同源部署可不改；建议后续在 nginx 前加 HTTPS。
+
+#### 老数据迁移（从旧版本升级到固定项目名 `raggraph` 时执行一次）
+
+旧版本没有固定项目名，卷全名取决于部署目录名（如 `backend_qdrant_data`）。升级后卷名固定为 `raggraph_*`，需要把老卷数据搬过来：
+
+```bash
+# 1) 先停服务（不删卷）
+cd backend
+docker compose --env-file .env -f docker-compose.yaml down
+
+# 2) 看老卷还在不在、叫什么名字
+docker volume ls | grep -E 'qdrant|neo4j|backend'
+# 例如看到 backend_qdrant_data / backend_neo4j_data / backend_backend_data
+
+# 3) 重新 up 一次，让新的 raggraph_* 卷被创建出来
+docker compose --env-file .env -f docker-compose.yaml up -d
+docker compose --env-file .env -f docker-compose.yaml down
+
+# 4) 把老卷数据拷进新卷（每条卷执行一次）
+docker run --rm \
+  -v backend_qdrant_data:/from -v raggraph_qdrant_data:/to \
+  alpine sh -c 'rm -rf /to/* && cp -a /from/. /to/'
+docker run --rm \
+  -v backend_neo4j_data:/from -v raggraph_neo4j_data:/to \
+  alpine sh -c 'rm -rf /to/* && cp -a /from/. /to/'
+docker run --rm \
+  -v backend_backend_data:/from -v raggraph_backend_data:/to \
+  alpine sh -c 'rm -rf /to/* && cp -a /from/. /to/'
+
+# 5) 重新启动并核对数据是否回来
+docker compose --env-file .env -f docker-compose.yaml up -d
+```
+
+> 老卷名以 `docker volume ls` 实际看到的为准，把上面命令里的 `backend_xxx` 换成你机器上的真实卷名。确认无误后老卷可保留作备份，不必急于删除。
 
 ### 端口对照
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import time
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +30,32 @@ settings = get_settings()
 logger = get_logger(__name__)
 
 
+RETRY_ATTEMPTS = 30
+RETRY_INTERVAL = 2.0
+
+
+def _retry_ready(name: str, fn) -> None:
+    """对依赖预热做退避重试，最多 RETRY_ATTEMPTS 次，每次间隔 RETRY_INTERVAL 秒。
+
+    Qdrant/Neo4j 容器启动后可能需要数秒（尤其 Neo4j）才真正可连接；
+    只试一次会在它们尚未就绪时放弃，导致 Qdrant 集合永远不创建、健康检查长期离线。
+    """
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            fn()
+            if attempt > 1:
+                logger.info("%s ready after %d retry attempt(s)", name, attempt - 1)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "%s not ready yet (attempt %d/%d): %s",
+                name, attempt, RETRY_ATTEMPTS, exc,
+            )
+            if attempt < RETRY_ATTEMPTS:
+                time.sleep(RETRY_INTERVAL)
+    logger.warning("%s still unavailable after %d attempts; degraded mode.", name, RETRY_ATTEMPTS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """构造各服务单例并挂载到 ``app.state``。"""
@@ -41,15 +69,10 @@ async def lifespan(app: FastAPI):
     neo4j = Neo4jStore(settings)
     rag = RagService(qdrant=qdrant, neo4j=neo4j, llm=llm, settings=settings)
 
-    # 尽力预热依赖：缺失的存储会优雅降级，而不会阻塞启动。
-    try:
-        qdrant.ensure_collection()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Qdrant unavailable at startup: %s", exc)
-    try:
-        neo4j.verify()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Neo4j unavailable at startup: %s", exc)
+    # 依赖预热：退避重试至 Qdrant/Neo4j 就绪（见 _retry_ready），
+    # 避免容器刚启动、服务尚未可连接时只试一次就放弃。
+    _retry_ready("Qdrant", qdrant.ensure_collection)
+    _retry_ready("Neo4j", neo4j.verify)
 
     app.state.auth = auth
     app.state.conversations = conversations

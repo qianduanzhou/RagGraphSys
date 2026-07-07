@@ -1,6 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
 # 后端本地开发编排：只启动 Qdrant + Neo4j，供本机 Python 后端调试。
 # 启动：npm run dev:db 或 docker compose --env-file .env -f docker-compose.dev.yaml up -d
+#
+# 固定项目名 name: raggraph-dev —— 与生产编排 raggraph 区分, 避免开发/生产卷互相污染。
+
+name: raggraph-dev
 
 services:
   qdrant:

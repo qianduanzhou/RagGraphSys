@@ -60,6 +60,20 @@ def test_append_message_persists_in_order(svc):
     assert msgs[0]["content"] == "q1"
 
 
+def test_clear_messages_empties_history_but_keeps_docs(svc):
+    c = svc.create("alice")
+    svc.append_message("alice", c["id"], "user", "q1")
+    svc.append_message("alice", c["id"], "assistant", "a1")
+    svc.add_document("alice", c["id"], {"name": "d.pdf", "chunks": 3, "at": 1})
+    cleared = svc.clear_messages("alice", c["id"])
+    assert cleared is not None
+    assert cleared["messages"] == []
+    # 文档清单不受影响
+    assert [d["name"] for d in cleared["documents"]] == ["d.pdf"]
+    # 越权返回 None
+    assert svc.clear_messages("bob", c["id"]) is None
+
+
 def test_documents_crud(svc):
     c = svc.create("alice")
     svc.add_document("alice", c["id"], {"name": "d.pdf", "chunks": 3, "at": 1})

@@ -29,9 +29,6 @@ function normalizeErrorMessage(message: string): string {
   if (lower.includes("account already exists")) return "该账号已存在";
   if (lower.includes("missing bearer token")) return "请先登录";
   if (lower.includes("invalid token")) return "登录已失效，请重新登录";
-  if (lower.includes("account must be at least")) return "账号至少 5 位，只能使用数字和字母";
-  if (lower.includes("password must be longer")) return "密码需超过 8 位";
-  if (lower.includes("password can only contain")) return "密码只能使用数字、字母和英文符号";
   if (lower.includes("authentication not initialised")) return "认证服务尚未初始化";
   if (lower.includes("application not initialised")) return "服务尚未初始化";
   if (lower.includes("graph failed")) return text.replace(/graph failed/i, "问答流程执行失败");
@@ -188,6 +185,16 @@ export async function deleteConversation(id: string): Promise<void> {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
+}
+
+/** 清空指定对话的消息历史（保留对话本身与文档清单）。 */
+export async function clearConversation(id: string): Promise<Conversation> {
+  const res = await fetch(`${BASE}/conversations/${id}/clear`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
 }
 
 /** 往指定对话上传文档（多文件；zip 由后端解包）。 */

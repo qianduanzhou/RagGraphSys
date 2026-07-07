@@ -8,8 +8,8 @@ interface Props {
   onSubmit: (mode: AuthMode, username: string, password: string) => Promise<void>;
 }
 
-const USERNAME_RE = /^[A-Za-z0-9]{5,}$/;
-const PASSWORD_RE = /^[\x21-\x7E]+$/;
+// 账号/密码只需超过 4 位，不限制字符组合。
+const MIN_LENGTH = 4;
 
 export default function AuthPage({ onSubmit }: Props) {
   const [mode, setMode] = useState<AuthMode>("login");
@@ -19,13 +19,13 @@ export default function AuthPage({ onSubmit }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const usernameOk = USERNAME_RE.test(username);
-  const passwordOk = password.length > 8 && PASSWORD_RE.test(password);
+  const usernameOk = username.trim().length > MIN_LENGTH;
+  const passwordOk = password.length > MIN_LENGTH;
   const canSubmit = usernameOk && passwordOk && !busy;
 
   const helper = useMemo(() => {
-    if (username && !usernameOk) return "账号至少 5 位，只能使用数字和字母";
-    if (password && !passwordOk) return "密码需超过 8 位，只能使用数字、字母和英文符号";
+    if (username && !usernameOk) return "账号需超过 4 位";
+    if (password && !passwordOk) return "密码需超过 4 位";
     return null;
   }, [password, passwordOk, username, usernameOk]);
 

@@ -279,16 +279,32 @@ def health(
     qdrant_ok = neo4j_ok = False
     counts: Dict[str, Any] = {}
     if rag is not None:
+        # 自愈：Qdrant 集合可能因启动时服务未就绪而未创建（count 返回 -1）；
+        # 失败时尝试 ensure_collection 后重试一次，使「刷新健康状态」能恢复在线。
         try:
             counts["qdrant_points"] = rag.qdrant.count(owner=username)
             qdrant_ok = counts["qdrant_points"] >= 0
         except Exception as exc:  # noqa: BLE001
             logger.warning("health: qdrant check failed: %s", exc)
+        if not qdrant_ok:
+            try:
+                rag.qdrant.ensure_collection()
+                counts["qdrant_points"] = rag.qdrant.count(owner=username)
+                qdrant_ok = counts["qdrant_points"] >= 0
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("health: qdrant self-heal failed: %s", exc)
         try:
             counts["neo4j_entities"] = rag.neo4j.count_entities(owner=username)
             neo4j_ok = True
         except Exception as exc:  # noqa: BLE001
             logger.warning("health: neo4j check failed: %s", exc)
+        if not neo4j_ok:
+            try:
+                rag.neo4j.verify()
+                counts["neo4j_entities"] = rag.neo4j.count_entities(owner=username)
+                neo4j_ok = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("health: neo4j self-heal failed: %s", exc)
     return {
         "status": "ok" if (qdrant_ok and neo4j_ok) else "degraded",
         "qdrant": qdrant_ok,
@@ -691,6 +707,19 @@ def delete_conversation(
     cleanup = rag.delete_conversation(username, conv_id)
     logger.info("Deleted conversation %s for %s: %s", conv_id, username, cleanup)
     return ConversationDeleteResponse(id=conv_id, **cleanup)
+
+
+@router.post("/conversations/{conv_id}/clear")
+def clear_conversation(
+    conv_id: str,
+    request: Request,
+    username: str = Depends(current_user),
+) -> Dict[str, Any]:
+    """清空当前对话的消息历史（保留对话本身及其文档清单）。"""
+    conv = _conversations(request).clear_messages(username, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问")
+    return conv
 
 
 @router.post("/conversations/{conv_id}/documents", response_model=BatchIngestResponse)

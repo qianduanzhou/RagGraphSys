@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import re
 import secrets
 import time
 from pathlib import Path
@@ -12,8 +11,7 @@ from threading import Lock
 from typing import Any, Dict
 
 
-USERNAME_RE = re.compile(r"^[A-Za-z0-9]{5,}$")
-PASSWORD_RE = re.compile(r"^[\x21-\x7E]+$")
+MIN_CREDENTIAL_LENGTH = 4  # 账号/密码只需超过 4 位，不限制字符组合
 PBKDF2_ITERATIONS = 160_000
 
 
@@ -102,17 +100,15 @@ class AuthService:
     @staticmethod
     def _validate_username(username: str) -> str:
         username = (username or "").strip()
-        if not USERNAME_RE.fullmatch(username):
-            raise AuthError("账号至少 5 位，只能使用数字和字母")
+        if len(username) <= MIN_CREDENTIAL_LENGTH:
+            raise AuthError("账号需超过 4 位")
         return username
 
     @staticmethod
     def _validate_password(password: str) -> None:
         password = password or ""
-        if len(password) <= 8:
-            raise AuthError("密码需超过 8 位")
-        if not PASSWORD_RE.fullmatch(password):
-            raise AuthError("密码只能使用数字、字母和英文符号")
+        if len(password) <= MIN_CREDENTIAL_LENGTH:
+            raise AuthError("密码需超过 4 位")
 
     @staticmethod
     def _hash_password(password: str, salt: str) -> str:
