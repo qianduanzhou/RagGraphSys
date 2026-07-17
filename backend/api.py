@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
@@ -27,6 +29,9 @@ from services.file_parser import ALLOWED_EXTS, parse_upload
 logger = get_logger(__name__)
 
 router = APIRouter()
+_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-extract")
+_GRAPH_TASKS: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+_GRAPH_TASKS_LOCK = Lock()
 
 
 # ---------------------------------------------------------------------- #
@@ -76,6 +81,22 @@ class BatchIngestResponse(BaseModel):
     succeeded: int
     failed: int
     files: List[FileIngestResult]
+
+
+class GraphTaskInfo(BaseModel):
+    source: str
+    status: Literal["pending", "running", "done", "failed"]
+    conversation_id: Optional[str] = None
+    triples: int = 0
+    error: Optional[str] = None
+    started_at: Optional[int] = None
+    finished_at: Optional[int] = None
+    elapsed_seconds: int = 0
+    updated_at: int
+
+
+class GraphTaskListResponse(BaseModel):
+    tasks: List[GraphTaskInfo]
 
 
 class DeleteDocRequest(BaseModel):
@@ -190,6 +211,113 @@ def _require_conv(request: Request, conv_id: str, username: str) -> Dict[str, An
     if conv is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问")
     return conv
+
+
+def _extract_graph_background(
+    rag: Any,
+    chunks: List[str],
+    source: str,
+    owner: str | None,
+    conversation_id: str | None,
+) -> None:
+    _set_graph_task(owner, conversation_id, source, status="running")
+    try:
+        triples = rag.extract_graph_for_chunks(
+            chunks,
+            source=source,
+            owner=owner,
+            conversation_id=conversation_id,
+        )
+        _set_graph_task(owner, conversation_id, source, status="done", triples=triples)
+    except Exception:  # noqa: BLE001
+        logger.exception("background graph extraction failed for %s", source)
+        _set_graph_task(owner, conversation_id, source, status="failed", error="图谱抽取失败")
+
+
+def _defer_graph_extraction(
+    rag: Any,
+    stats: Dict[str, Any],
+    source: str,
+    owner: str | None,
+    conversation_id: str | None = None,
+) -> Any:
+    chunks = stats.get("graph_chunks") or []
+    if not chunks:
+        return None
+    _set_graph_task(owner, conversation_id, source, status="pending")
+    return _GRAPH_EXECUTOR.submit(
+        _extract_graph_background,
+        rag,
+        chunks,
+        source,
+        owner,
+        conversation_id,
+    )
+
+
+def _graph_task_key(owner: str | None, conversation_id: str | None, source: str) -> tuple[str, str, str]:
+    return (owner or "", conversation_id or "", source)
+
+
+def _set_graph_task(
+    owner: str | None,
+    conversation_id: str | None,
+    source: str,
+    status: Literal["pending", "running", "done", "failed"],
+    triples: int = 0,
+    error: str | None = None,
+) -> None:
+    with _GRAPH_TASKS_LOCK:
+        now = time.time()
+        now_ts = int(now)
+        existing = _GRAPH_TASKS.get(_graph_task_key(owner, conversation_id, source), {})
+        started_at = existing.get("started_at")
+        finished_at = existing.get("finished_at")
+
+        if status == "pending":
+            started_at = None
+            finished_at = None
+            elapsed_seconds = 0
+        elif status == "running":
+            started_at = int(started_at or now_ts)
+            finished_at = None
+            elapsed_seconds = max(0, now_ts - int(started_at))
+        else:
+            started_at = int(started_at or now_ts)
+            finished_at = now_ts
+            elapsed_seconds = max(0, finished_at - int(started_at))
+
+        _GRAPH_TASKS[_graph_task_key(owner, conversation_id, source)] = {
+            "source": source,
+            "status": status,
+            "conversation_id": conversation_id,
+            "triples": triples if status in {"done", "failed"} else int(existing.get("triples", 0) or 0),
+            "error": error,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "elapsed_seconds": elapsed_seconds,
+            "updated_at": now_ts,
+        }
+
+
+def _list_graph_tasks(owner: str, conversation_id: str | None = None) -> List[Dict[str, Any]]:
+    now_ts = int(time.time())
+    with _GRAPH_TASKS_LOCK:
+        rows = [
+            dict(task)
+            for (task_owner, task_conv, _), task in _GRAPH_TASKS.items()
+            if task_owner == owner and (conversation_id is None or task_conv == conversation_id)
+        ]
+    for row in rows:
+        if row.get("status") == "running" and row.get("started_at"):
+            row["elapsed_seconds"] = max(0, now_ts - int(row["started_at"]))
+    rows.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
+    return rows
+
+
+def _remove_graph_task(owner: str | None, conversation_id: str | None, source: str) -> None:
+    with _GRAPH_TASKS_LOCK:
+        _GRAPH_TASKS.pop(_graph_task_key(owner, conversation_id, source), None)
 
 
 async def _collect_upload_sources(
@@ -447,7 +575,8 @@ def ingest_text(
 ) -> IngestResponse:
     _, rag = _state(request)
     try:
-        stats = rag.ingest_text(payload.text, source=payload.source, owner=username)
+        stats = rag.ingest_text(payload.text, source=payload.source, owner=username, extract_graph=False)
+        _defer_graph_extraction(rag, stats, payload.source, username)
     except Exception as exc:  # noqa: BLE001
         logger.exception("ingest failed")
         raise HTTPException(status_code=500, detail=f"入库失败：{exc}") from exc
@@ -476,7 +605,8 @@ async def ingest_file(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        stats = rag.ingest_text(text, source=name, owner=username)
+        stats = rag.ingest_text(text, source=name, owner=username, extract_graph=False)
+        _defer_graph_extraction(rag, stats, name, username)
     except Exception as exc:  # noqa: BLE001
         logger.exception("file ingest failed")
         raise HTTPException(status_code=500, detail=f"入库失败：{exc}") from exc
@@ -605,7 +735,8 @@ async def ingest_files(
     for fname, raw in file_sources:
         try:
             text = parse_upload(fname, raw)
-            stats = rag.ingest_text(text, source=fname, owner=username)
+            stats = rag.ingest_text(text, source=fname, owner=username, extract_graph=False)
+            _defer_graph_extraction(rag, stats, fname, username)
             total_chunks += stats["chunks"]
             total_triples += stats["triples"]
             results.append(FileIngestResult(name=fname, chunks=stats["chunks"], triples=stats["triples"], ok=True))
@@ -750,7 +881,14 @@ async def upload_conversation_documents(
     for fname, raw in file_sources:
         try:
             text = parse_upload(fname, raw)
-            stats = rag.ingest_text(text, source=fname, owner=username, conversation_id=conv_id)
+            stats = rag.ingest_text(
+                text,
+                source=fname,
+                owner=username,
+                conversation_id=conv_id,
+                extract_graph=False,
+            )
+            _defer_graph_extraction(rag, stats, fname, username, conv_id)
             total_chunks += stats["chunks"]
             total_triples += stats["triples"]
             svc.add_document(username, conv_id, {"name": fname, "chunks": stats["chunks"], "at": int(time.time())})
@@ -771,6 +909,16 @@ async def upload_conversation_documents(
     )
 
 
+@router.get("/conversations/{conv_id}/graph-tasks", response_model=GraphTaskListResponse)
+def conversation_graph_tasks(
+    conv_id: str,
+    request: Request,
+    username: str = Depends(current_user),
+) -> GraphTaskListResponse:
+    _require_conv(request, conv_id, username)
+    return GraphTaskListResponse(tasks=_list_graph_tasks(username, conv_id))
+
+
 @router.delete("/conversations/{conv_id}/documents", response_model=DeleteDocResponse)
 def delete_conversation_document(
     conv_id: str,
@@ -784,6 +932,7 @@ def delete_conversation_document(
     _, rag = _state(request)
     stats = rag.delete_document(payload.source, owner=username, conversation_id=conv_id)
     svc.remove_document(username, conv_id, payload.source)
+    _remove_graph_task(username, conv_id, payload.source)
     return DeleteDocResponse(
         source=payload.source,
         chunks=stats["chunks"],

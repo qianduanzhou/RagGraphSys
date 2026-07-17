@@ -4,6 +4,7 @@ import type {
   BatchIngestResponse,
   ConversationDoc,
   ConversationSummary,
+  GraphTaskInfo,
   HealthResponse,
 } from "../types";
 import ConversationList from "./ConversationList";
@@ -30,6 +31,7 @@ interface Props {
   /** 批量删除对话（单删即长度 1）。 */
   onBatchDeleteConversations: (ids: string[]) => void;
   docs: ConversationDoc[];
+  graphTasks: Record<string, GraphTaskInfo>;
   health: HealthResponse | null;
   onUploadFiles: (files: File[]) => Promise<BatchIngestResponse>;
   /** 批量删除文档（单删即长度 1）。 */
@@ -58,6 +60,24 @@ function formatTime(at: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  const total = Math.max(0, Math.floor(seconds ?? 0));
+  if (total < 60) return `${total}秒`;
+  const minutes = Math.floor(total / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return `${minutes}分${rest}秒`;
+}
+
+function graphTaskText(task?: GraphTaskInfo): string | null {
+  if (!task) return null;
+  if (task.status === "pending") return "图谱排队";
+  const duration = formatDuration(task.elapsed_seconds);
+  if (task.status === "running") return `图谱抽取中 · ${duration}`;
+  if (task.status === "failed") return `图谱失败 · ${duration}`;
+  const triples = task.triples > 0 ? ` · ${task.triples} 关系` : "";
+  return `图谱完成${triples} · ${duration}`;
+}
+
 export default function Sidebar({
   conversations,
   currentId,
@@ -66,6 +86,7 @@ export default function Sidebar({
   onRenameConversation,
   onBatchDeleteConversations,
   docs,
+  graphTasks,
   health,
   onUploadFiles,
   onDeleteDocs,
@@ -311,6 +332,8 @@ export default function Sidebar({
             docs.map((d, i) => {
               const isSel = selectedDocs.has(d.name);
               const isDeleting = deleting === d.name;
+              const graphTask = graphTasks[d.name];
+              const graphLabel = graphTaskText(graphTask);
               return (
                 <div
                   className={`doc-item ${isSel ? "selected" : ""} ${
@@ -337,6 +360,11 @@ export default function Sidebar({
                     <span className="doc-stat">
                       {d.chunks} 片段{formatTime(d.at) ? ` · ${formatTime(d.at)}` : ""}
                     </span>
+                    {graphTask && graphLabel && (
+                      <span className={`graph-task-pill graph-task-${graphTask.status}`}>
+                        {graphLabel}
+                      </span>
+                    )}
                   </div>
                   {!docSelectMode && (
                     <button

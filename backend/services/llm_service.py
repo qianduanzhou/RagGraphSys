@@ -44,14 +44,18 @@ class LLMService:
             # 测试或自定义实现可注入
             self.llm = llm
         else:
-            self.llm = ChatOpenAI(
-                model=settings.llm_model,
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
-                temperature=settings.llm_temperature,
-                max_tokens=settings.llm_max_tokens,
-                timeout=settings.llm_request_timeout,
-            )
+            kwargs: Dict[str, Any] = {
+                "model": settings.llm_model,
+                "api_key": settings.llm_api_key,
+                "base_url": settings.llm_base_url,
+                "temperature": settings.llm_temperature,
+                "max_tokens": settings.llm_max_tokens,
+                "timeout": settings.llm_request_timeout,
+            }
+            default_headers = settings.default_headers_dict
+            if default_headers:
+                kwargs["default_headers"] = default_headers
+            self.llm = ChatOpenAI(**kwargs)
             logger.info(
                 "LLM 初始化完成：model=%s，base_url=%s",
                 settings.llm_model,

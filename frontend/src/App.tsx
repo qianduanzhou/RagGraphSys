@@ -8,9 +8,10 @@ import {
   clearConversation,
  createConversation,
  deleteConversation,
- deleteConversationDoc,
- fetchCurrentUser,
- fetchHealth,
+  deleteConversationDoc,
+  fetchCurrentUser,
+  fetchConversationGraphTasks,
+  fetchHealth,
  getConversation,
  listConversations,
   loginAccount,
@@ -31,6 +32,7 @@ import {
   type ConversationDoc,
   type ConversationMessage,
   type ConversationSummary,
+  type GraphTaskInfo,
   type HealthResponse,
   type StepStatus,
 } from "./types";
@@ -78,6 +80,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
   const [streaming, setStreaming] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [graphTasks, setGraphTasks] = useState<Record<string, GraphTaskInfo>>({});
   const [mode, setMode] = useState<ChatMode>("rag");
   const [theme, setTheme] = useState<ThemeMode>(loadTheme);
   const [webSearchAvailable, setWebSearchAvailable] = useState<boolean>(true);
@@ -109,6 +112,38 @@ export default function App() {
       .catch(() => setHealth(null));
   }, []);
 
+  const refreshGraphTasks = useCallback(
+    async (id: string | null) => {
+      if (!id || !session) {
+        setGraphTasks({});
+        return;
+      }
+      try {
+        const res = await fetchConversationGraphTasks(id);
+        setGraphTasks(Object.fromEntries(res.tasks.map((task) => [task.source, task])));
+      } catch {
+        setGraphTasks({});
+      }
+    },
+    [session]
+  );
+
+  useEffect(() => {
+    void refreshGraphTasks(currentId);
+  }, [currentId, refreshGraphTasks]);
+
+  const hasActiveGraphTask = Object.values(graphTasks).some(
+    (task) => task.status === "pending" || task.status === "running"
+  );
+
+  useEffect(() => {
+    if (!currentId || !hasActiveGraphTask) return;
+    const timer = window.setInterval(() => {
+      void refreshGraphTasks(currentId);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [currentId, hasActiveGraphTask, refreshGraphTasks]);
+
   const selectConversation = useCallback(async (id: string) => {
     setCurrentId(id);
     try {
@@ -116,11 +151,13 @@ export default function App() {
       setCurrent(conv);
       setMessages(toMessages(conv));
       loadedRef.current = id;
+      await refreshGraphTasks(id);
     } catch {
       setCurrent(null);
       setMessages([WELCOME]);
+      setGraphTasks({});
     }
-  }, []);
+  }, [refreshGraphTasks]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -329,10 +366,11 @@ export default function App() {
       if (!currentId) throw new Error("未选择对话");
       const res = await uploadConversationDocs(currentId, files);
       await refreshCurrent();
+      await refreshGraphTasks(currentId);
       refreshHealth();
       return res;
     },
-    [currentId, refreshCurrent, refreshHealth]
+    [currentId, refreshCurrent, refreshGraphTasks, refreshHealth]
   );
 
   const handleDeleteDocs = useCallback(
@@ -340,9 +378,15 @@ export default function App() {
       if (!currentId || sources.length === 0) return;
       await Promise.all(sources.map((s) => deleteConversationDoc(currentId, s)));
       await refreshCurrent();
+      setGraphTasks((prev) => {
+        const next = { ...prev };
+        for (const source of sources) delete next[source];
+        return next;
+      });
+      await refreshGraphTasks(currentId);
       refreshHealth();
     },
-    [currentId, refreshCurrent, refreshHealth]
+    [currentId, refreshCurrent, refreshGraphTasks, refreshHealth]
   );
 
   const handleClear = useCallback(async () => {
@@ -383,6 +427,7 @@ export default function App() {
         onRenameConversation={handleRenameConversation}
         onBatchDeleteConversations={handleDeleteConversations}
         docs={docs}
+        graphTasks={graphTasks}
         health={health}
         onUploadFiles={handleUploadFiles}
         onDeleteDocs={handleDeleteDocs}

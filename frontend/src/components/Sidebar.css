@@ -207,6 +207,7 @@
 .doc-meta {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
 }
 .doc-name {
@@ -221,6 +222,36 @@
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--text-dim);
+}
+.graph-task-pill {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid currentColor;
+}
+.graph-task-pending {
+  color: var(--text-dim);
+  background: var(--border-soft);
+}
+.graph-task-running {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.graph-task-done {
+  color: var(--graph);
+  background: var(--graph-soft);
+}
+.graph-task-failed {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 .doc-del {
   flex-shrink: 0;

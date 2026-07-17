@@ -107,6 +107,24 @@ export interface BatchIngestResponse {
   files: FileIngestResult[];
 }
 
+export type GraphTaskState = "pending" | "running" | "done" | "failed";
+
+export interface GraphTaskInfo {
+  source: string;
+  status: GraphTaskState;
+  conversation_id?: string | null;
+  triples: number;
+  error?: string | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+  elapsed_seconds: number;
+  updated_at: number;
+}
+
+export interface GraphTaskListResponse {
+  tasks: GraphTaskInfo[];
+}
+
 export interface DeleteDocResponse {
   source: string;
   chunks: number;

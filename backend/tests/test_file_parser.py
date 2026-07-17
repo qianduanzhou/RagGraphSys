@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from services.file_parser import ALLOWED_EXTS, parse_upload
+from services.file_parser import ALLOWED_EXTS, parse_upload, parse_upload_detail
 
 
 # ------------------------------------------------------------------ #
@@ -92,6 +92,23 @@ def test_parse_docx_roundtrip():
     assert ".docx" in ALLOWED_EXTS
 
 
+def test_parse_docx_includes_header_and_footer():
+    docx = pytest.importorskip("docx")
+    doc = docx.Document()
+    section = doc.sections[0]
+    section.header.paragraphs[0].text = "Confidential Header"
+    section.footer.paragraphs[0].text = "Footer Page"
+    doc.add_paragraph("Body paragraph")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    text = parse_upload("rich.docx", buf.getvalue())
+
+    assert "Body paragraph" in text
+    assert "Confidential Header" in text
+    assert "Footer Page" in text
+
+
 # ------------------------------------------------------------------ #
 # CSV —— 结构化解析为 markdown 表格（保留表头与行列结构）
 # ------------------------------------------------------------------ #
@@ -111,6 +128,13 @@ def test_parse_csv_is_structured_not_raw_text():
 
 def test_csv_in_allowed_exts():
     assert ".csv" in ALLOWED_EXTS
+
+
+def test_parse_csv_handles_gb18030_bytes():
+    raw = "姓名,城市\n张三,广州\n".encode("gb18030")
+    text = parse_upload("cn.csv", raw)
+    assert "张三" in text
+    assert "广州" in text
 
 
 # ------------------------------------------------------------------ #
@@ -146,6 +170,47 @@ def test_parse_xlsx_multiple_sheets_merged():
     text = parse_upload("multi.xlsx", buf.getvalue())
     assert "## Sheet: S1" in text
     assert "## Sheet: S2" in text
+
+
+def test_parse_xlsx_preserves_formula_only_sheets():
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    summary = wb.active
+    summary.title = "Summary"
+    summary["A1"] = "=1+2"
+    summary["B1"] = "=SUM(3,4)"
+    detail = wb.create_sheet("Detail")
+    detail.append(["name", "qty"])
+    detail.append(["apple", 2])
+    buf = io.BytesIO()
+    wb.save(buf)
+    text = parse_upload("formula.xlsx", buf.getvalue())
+    assert "## Sheet: Summary" in text
+    assert "=1+2" in text
+    assert "## Sheet: Detail" in text
+    assert "| name | qty |" in text
+
+
+def test_parse_xlsx_expands_merged_cells_and_comments():
+    openpyxl = pytest.importorskip("openpyxl")
+    from openpyxl.comments import Comment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Merged"
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "Merged Title"
+    ws.append(["name", "note"])
+    ws.append(["Alice", "ok"])
+    ws["B3"].comment = Comment("important", "tester")
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    parsed = parse_upload_detail("merged.xlsx", buf.getvalue())
+
+    assert "| Merged Title | Merged Title |" in parsed.text
+    assert "批注：important" in parsed.text
+    assert any("合并单元格" in warning for warning in parsed.warnings)
 
 
 # ------------------------------------------------------------------ #

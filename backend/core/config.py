@@ -6,6 +6,7 @@ pydantic-settings 进行校验。业务代码必须通过 :func:`get_settings`
 """
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
     llm_model: str = "glm-5.2"
+    default_headers: str = ""
     # Embedding 允许接入与 LLM 不同的厂商：base_url / api_key 各自独立。
     # embedding_api_key 留空时回退到 llm_api_key（与 LLM 同厂商时无需重复填写）；
     # embedding_base_url 默认与 llm_base_url 同源，换厂商时改成 embedding 服务地址。
@@ -87,6 +89,22 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def default_headers_dict(self) -> dict[str, str] | None:
+        raw = (self.default_headers or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("DEFAULT_HEADERS must be a JSON object string") from exc
+        if not isinstance(parsed, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in parsed.items()
+        ):
+            raise ValueError("DEFAULT_HEADERS must be a JSON object with string keys and values")
+        return parsed
 
 
 @lru_cache

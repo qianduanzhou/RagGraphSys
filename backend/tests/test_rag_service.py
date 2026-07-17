@@ -1,5 +1,5 @@
 """rag.rag_service 的测试（merge_results + 使用 mock 的 build_context/retrieve）。"""
-from rag.rag_service import RagService, merge_results
+from rag.rag_service import RagService, _sample_graph_chunks, merge_results
 from tests.conftest import MockLLM, MockNeo4j, MockQdrant, MockRag
 
 
@@ -71,6 +71,16 @@ def test_merge_results_renders_na_for_none_score():
 # --------------------------------------------------------------------------- #
 def _make_rag(qdrant=None, neo4j=None, llm=None, settings=None):
     return RagService(qdrant=qdrant or MockQdrant(), neo4j=neo4j or MockNeo4j(), llm=llm or MockLLM(), settings=settings)
+
+
+def test_sample_graph_chunks_covers_head_middle_tail():
+    chunks = [f"chunk-{i}" for i in range(20)]
+    sampled = _sample_graph_chunks(chunks)
+
+    assert sampled[:3] == ["chunk-0", "chunk-1", "chunk-2"]
+    assert "chunk-10" in sampled
+    assert sampled[-2:] == ["chunk-18", "chunk-19"]
+    assert len(sampled) <= 8
 
 
 def test_retrieve_returns_both_paths(settings):
@@ -203,6 +213,23 @@ def test_ingest_text_passes_conversation_id_to_qdrant(settings):
     rag = _make_rag(qdrant=Q(), settings=settings)
     rag.ingest_text("内容", source="d.pdf", owner="alice", conversation_id="c1")
     assert seen["meta"][0]["conversation_id"] == "c1"
+
+
+def test_ingest_text_can_defer_graph_extraction(settings):
+    class Q(MockQdrant):
+        def upsert(self, texts, metadatas=None):
+            return len(texts)
+
+    class L(MockLLM):
+        def extract_graph(self, text, max_triples=12):
+            raise AssertionError("graph extraction should be deferred")
+
+    rag = _make_rag(qdrant=Q(), llm=L(), settings=settings)
+    stats = rag.ingest_text("alpha\n\nbeta\n\ngamma", source="d.pdf", extract_graph=False)
+
+    assert stats["chunks"] >= 1
+    assert stats["triples"] == 0
+    assert stats["graph_chunks"]
 
 
 def test_retrieve_passes_conversation_id(settings):

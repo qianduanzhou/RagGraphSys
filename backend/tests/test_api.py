@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from api import _sse, _summarize_update
+from api import _defer_graph_extraction, _sse, _summarize_update
 from services.auth_service import AuthService
 
 
@@ -258,7 +258,7 @@ def test_ingest_file_parses_code_file(client):
     captured = {}
 
     class _Rag:
-        def ingest_text(self, text, source="manual", owner=None):
+        def ingest_text(self, text, source="manual", owner=None, extract_graph=True):
             captured["text"] = text
             captured["source"] = source
             return {"chunks": 1, "triples": 0}
@@ -271,6 +271,27 @@ def test_ingest_file_parses_code_file(client):
     assert r.status_code == 200
     assert captured["text"] == "print('hello')"
     assert captured["source"] == "main.py"
+
+
+def test_defer_graph_extraction_runs_outside_request_thread():
+    captured = {}
+
+    class _Rag:
+        def extract_graph_for_chunks(self, chunks, source="manual", owner=None, conversation_id=None):
+            captured["background"] = (chunks, source, owner, conversation_id)
+            return 1
+
+    future = _defer_graph_extraction(
+        _Rag(),
+        {"chunks": 1, "triples": 0, "graph_chunks": ["chunk-a"]},
+        "main.py",
+        "alice",
+    )
+
+    assert future is not None
+    future.result(timeout=2)
+    assert captured["background"][0] == ["chunk-a"]
+    assert captured["background"][1] == "main.py"
 
 
 def test_ingest_file_rejects_unsupported_type(client):
@@ -287,7 +308,7 @@ def test_ingest_files_accepts_multiple_types(client):
     sources = []
 
     class _Rag:
-        def ingest_text(self, text, source="manual", owner=None):
+        def ingest_text(self, text, source="manual", owner=None, extract_graph=True):
             sources.append((source, text))
             return {"chunks": 1, "triples": 0}
 
@@ -320,7 +341,7 @@ def test_ingest_files_unpacks_zip_members(client):
     sources = []
 
     class _Rag:
-        def ingest_text(self, text, source="manual", owner=None):
+        def ingest_text(self, text, source="manual", owner=None, extract_graph=True):
             sources.append((source, text))
             return {"chunks": 1, "triples": 0}
 
@@ -492,7 +513,7 @@ def test_upload_conversation_documents_ingests_with_conv_id(client):
     captured = {}
 
     class _Rag:
-        def ingest_text(self, text, source="manual", owner=None, conversation_id=None):
+        def ingest_text(self, text, source="manual", owner=None, conversation_id=None, extract_graph=True):
             captured["conv"] = conversation_id
             return {"chunks": 2, "triples": 0}
 

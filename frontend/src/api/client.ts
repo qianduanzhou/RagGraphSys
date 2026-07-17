@@ -5,6 +5,7 @@ import type {
   Conversation,
   ConversationSummary,
   DeleteDocResponse,
+  GraphTaskListResponse,
   HealthResponse,
   NodeUpdate,
   SourceRef,
@@ -214,6 +215,14 @@ export async function uploadConversationDocs(
 }
 
 /** 删除对话内某文档。 */
+export async function fetchConversationGraphTasks(id: string): Promise<GraphTaskListResponse> {
+  const res = await fetch(`${BASE}/conversations/${id}/graph-tasks`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
 export async function deleteConversationDoc(
   id: string,
   source: string

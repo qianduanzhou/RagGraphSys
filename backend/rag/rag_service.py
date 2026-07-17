@@ -21,6 +21,37 @@ from services.llm_service import LLMService
 logger = get_logger(__name__)
 
 
+def _sample_graph_chunks(chunks: List[str], max_chunks: int = 8) -> List[str]:
+    """Pick representative chunks for graph extraction.
+
+    Only extracting triples from the beginning of a long document misses
+    entities in later pages/sheets.  Sampling head / middle / tail keeps cost
+    bounded while improving graph coverage.
+    """
+
+    if len(chunks) <= max_chunks:
+        return list(chunks)
+
+    candidates = [
+        0,
+        1,
+        2,
+        len(chunks) // 4,
+        len(chunks) // 2,
+        (len(chunks) * 3) // 4,
+        len(chunks) - 2,
+        len(chunks) - 1,
+    ]
+    indices: List[int] = []
+    for idx in candidates:
+        idx = max(0, min(len(chunks) - 1, idx))
+        if idx not in indices:
+            indices.append(idx)
+        if len(indices) >= max_chunks:
+            break
+    return [chunks[i] for i in sorted(indices)]
+
+
 def merge_results(
     qdrant_hits: List[Dict[str, Any]],
     neo4j_hits: List[Dict[str, Any]],
@@ -105,7 +136,8 @@ class RagService:
         source: str = "manual",
         owner: str | None = None,
         conversation_id: str | None = None,
-    ) -> Dict[str, int]:
+        extract_graph: bool = True,
+    ) -> Dict[str, Any]:
         """对文本分块后写入 Qdrant，并抽取三元组写入 Neo4j。
 
         ``conversation_id`` 非 None 时，分片与三元组都打上对话标记，检索/删除按对话隔离。
@@ -126,9 +158,16 @@ class RagService:
                 meta["conversation_id"] = conversation_id
             metadatas.append(meta)
         upserted = self.qdrant.upsert(chunks, metadatas)
+        if not extract_graph:
+            graph_chunks = _sample_graph_chunks(chunks)
+            logger.info(
+                "Ingested vectors for '%s': %d chunks; graph extraction deferred (conv=%s)",
+                source, upserted, conversation_id,
+            )
+            return {"chunks": upserted, "triples": 0, "graph_chunks": graph_chunks}
 
-        # 从文档开头部分抽取图谱（控制成本）。传入 source 便于按文档/对话删除。
-        triples = self.llm.extract_graph("\n\n".join(chunks[:6]))
+        # 从文档头/中/尾采样抽取图谱，避免长文档后半部分实体关系完全进不了 Neo4j。
+        triples = self.llm.extract_graph("\n\n".join(_sample_graph_chunks(chunks)))
         merged = self.neo4j.add_knowledge(
             [(t["head"], t["rel"], t["tail"]) for t in triples],
             source=self._source_key(source, owner, conversation_id),
@@ -136,6 +175,24 @@ class RagService:
 
         logger.info("Ingested '%s': %d chunks, %d triples (conv=%s)", source, upserted, merged, conversation_id)
         return {"chunks": upserted, "triples": merged}
+
+    def extract_graph_for_chunks(
+        self,
+        chunks: List[str],
+        source: str = "manual",
+        owner: str | None = None,
+        conversation_id: str | None = None,
+    ) -> int:
+        """Extract graph triples from already-ingested chunks and write them to Neo4j."""
+        if not chunks:
+            return 0
+        triples = self.llm.extract_graph("\n\n".join(_sample_graph_chunks(chunks)))
+        merged = self.neo4j.add_knowledge(
+            [(t["head"], t["rel"], t["tail"]) for t in triples],
+            source=self._source_key(source, owner, conversation_id),
+        )
+        logger.info("Extracted graph for '%s': %d triples (conv=%s)", source, merged, conversation_id)
+        return merged
 
     def delete_document(
         self,

@@ -2,6 +2,7 @@
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from core.config import Settings
 from services.llm_service import LLMService
 from tests.conftest import FakeChatModel
 
@@ -41,6 +42,39 @@ def test_chat_no_bind_when_no_overrides(settings):
 def test_chat_stream_yields_tokens(settings):
     svc = make_service(settings, stream_chunks=["你", "好", "！"])
     assert list(svc.chat_stream([{"role": "user", "content": "x"}])) == ["你", "好", "！"]
+
+
+def test_real_init_passes_default_headers_to_chat_openai(monkeypatch):
+    captured: dict = {}
+
+    class _SpyChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("services.llm_service.ChatOpenAI", _SpyChatOpenAI)
+
+    settings = Settings(
+        llm_api_key="test-key",
+        default_headers='{"HTTP-Referer":"https://example.com","X-Title":"RagGraphSys"}',
+    )
+    LLMService(settings)
+
+    assert captured["default_headers"] == {
+        "HTTP-Referer": "https://example.com",
+        "X-Title": "RagGraphSys",
+    }
+
+
+def test_real_init_rejects_invalid_default_headers(monkeypatch):
+    class _SpyChatOpenAI:
+        def __init__(self, **_kwargs):
+            raise AssertionError("ChatOpenAI should not be initialized")
+
+    monkeypatch.setattr("services.llm_service.ChatOpenAI", _SpyChatOpenAI)
+
+    settings = Settings(llm_api_key="test-key", default_headers='["not", "an", "object"]')
+    with pytest.raises(ValueError, match="DEFAULT_HEADERS"):
+        LLMService(settings)
 
 
 def test_chat_stream_skips_empty_content(settings):
