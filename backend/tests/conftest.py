@@ -340,12 +340,14 @@ class MockQdrant:
         raise_search: bool = False,
         deleted: int = 0,
         scroll_hits: Optional[List[dict]] = None,
+        sources: Optional[List[str]] = None,
     ) -> None:
         self._hits = hits if hits is not None else [{"text": "vec", "score": 0.9, "source": "d.txt"}]
         self.raise_search = raise_search
         self.deleted = deleted
         # 整文档拉取（scroll_by_source）的注入式返回；默认 [] 适配非聚合测试
         self._scroll_hits = scroll_hits if scroll_hits is not None else []
+        self._sources = sources
         self.scroll_calls: List[tuple] = []
 
     def search(self, query: str, top_k: Optional[int] = None, owner: Optional[str] = None, conversation_id: Optional[str] = None) -> List[dict]:
@@ -359,6 +361,11 @@ class MockQdrant:
         if limit is not None:
             out = out[:limit]
         return out
+
+    def list_sources(self, owner: Optional[str] = None, conversation_id: Optional[str] = None) -> List[str]:
+        if self._sources is not None:
+            return list(self._sources)
+        return sorted({h.get("source") or "unknown" for h in self._hits})
 
     def delete_by_source(self, source: str, owner: Optional[str] = None, conversation_id: Optional[str] = None) -> int:
         return self.deleted
@@ -402,3 +409,14 @@ class MockRag:
             hits, agg = self._resolve
             return list(hits), agg
         return list(vector_hits), False
+
+    def prefer_single_conversation_document(self, vector_hits: List[dict], owner: Optional[str] = None, conversation_id: Optional[str] = None):
+        if not conversation_id:
+            return list(vector_hits), False
+        sources = self.qdrant.list_sources(owner=owner, conversation_id=conversation_id)
+        if len(sources) != 1:
+            return list(vector_hits), False
+        full = self.qdrant.scroll_by_source(sources[0], owner=owner, conversation_id=conversation_id)
+        if not full:
+            return list(vector_hits), False
+        return list(full), True

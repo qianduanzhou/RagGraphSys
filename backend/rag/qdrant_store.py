@@ -253,6 +253,38 @@ class QdrantStore:
             logger.warning("scroll_by_source failed: %s", exc)
             return []
 
+    def list_sources(
+        self,
+        owner: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        batch_size: int = 256,
+    ) -> List[str]:
+        """列出指定范围内已有分片的文档来源，用于判断当前对话是否只有一个文档。"""
+        try:
+            sources: set[str] = set()
+            offset = None
+            while True:
+                records, next_offset = self.client.scroll(
+                    collection_name=self.collection,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                    scroll_filter=self._payload_filter(owner=owner, conversation_id=conversation_id),
+                )
+                for record in records or []:
+                    payload = getattr(record, "payload", None) or {}
+                    source = payload.get("source")
+                    if source:
+                        sources.add(str(source))
+                if next_offset is None:
+                    break
+                offset = next_offset
+            return sorted(sources)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("list_sources failed: %s", exc)
+            return []
+
     def scan_all(self, batch_size: int = 256, owner: Optional[str] = None) -> List[Dict[str, Any]]:
         """扫描集合中所有点，返回 ``[{id, payload}]``。用于聚合文档列表。
 

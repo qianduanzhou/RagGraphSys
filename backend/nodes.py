@@ -119,6 +119,13 @@ class GraphNodes:
             state.get("question", ""), vector_hits,
             owner=state.get("owner"), conversation_id=state.get("conversation_id"),
         )
+        single_document = False
+        if not aggregate:
+            vector_hits, single_document = self.rag.prefer_single_conversation_document(
+                vector_hits,
+                owner=state.get("owner"),
+                conversation_id=state.get("conversation_id"),
+            )
 
         context, sources = merge_results(
             vector_hits,
@@ -127,9 +134,15 @@ class GraphNodes:
         )
         logger.info(
             "merge_node: %d sources (qdrant=%d, neo4j=%d, threshold=%.2f, aggregate=%s)",
-            len(sources), len(vector_hits), len(graph_hits), self.settings.qdrant_score_threshold, aggregate,
+            len(sources), len(vector_hits), len(graph_hits), self.settings.qdrant_score_threshold,
+            aggregate or single_document,
         )
-        return {"context": context, "sources": sources, "used_rag": bool(sources), "aggregate": aggregate}
+        return {
+            "context": context,
+            "sources": sources,
+            "used_rag": bool(sources),
+            "aggregate": aggregate or single_document,
+        }
 
     # ------------------------------------------------------------------ #
     # llm_node — 生成回答

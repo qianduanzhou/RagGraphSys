@@ -185,6 +185,33 @@ def test_retrieve_non_aggregate_unchanged(settings):
     assert out["qdrant"] == hits
 
 
+def test_retrieve_single_conversation_document_prefers_document_even_when_low_score(settings):
+    low = [{"text": "低分命中", "score": 0.01, "source": "only.pdf"}]
+    scroll = [{"text": "单文档正文", "score": None, "source": "only.pdf"}]
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=low, scroll_hits=scroll, sources=["only.pdf"]),
+        neo4j=MockNeo4j(rels=[]),
+        settings=settings,
+    )
+
+    out = rag.retrieve("这个问题可能和文档无关", owner="alice", conversation_id="c1")
+    assert out["aggregate"] is True
+    assert out["qdrant"] == scroll
+
+
+def test_retrieve_multiple_conversation_documents_keeps_normal_threshold_path(settings):
+    low = [{"text": "低分命中", "score": 0.01, "source": "a.pdf"}]
+    rag = _make_rag(
+        qdrant=MockQdrant(hits=low, scroll_hits=[{"text": "should-not-be-used"}], sources=["a.pdf", "b.pdf"]),
+        neo4j=MockNeo4j(rels=[]),
+        settings=settings,
+    )
+
+    out = rag.retrieve("这个问题可能和文档无关", owner="alice", conversation_id="c1")
+    assert out["aggregate"] is False
+    assert out["qdrant"] == low
+
+
 def test_build_context_propagates_aggregate(settings):
     jobs_hits = [{"text": f"h{i}", "score": 0.9, "source": "jobs.pdf"} for i in range(5)]
     scroll = [{"text": f"chunk-{i}", "score": None, "source": "jobs.pdf"} for i in range(3)]

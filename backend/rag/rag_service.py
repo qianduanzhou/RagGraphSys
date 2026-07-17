@@ -322,6 +322,41 @@ class RagService:
         )
         return full, True
 
+    def prefer_single_conversation_document(
+        self,
+        vector_hits: List[Dict[str, Any]],
+        owner: str | None = None,
+        conversation_id: str | None = None,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """当前对话只有一个文档时，优先拉取该文档内容作为参考资料。
+
+        用户在单文档对话里提问时，意图通常默认指向这个文档。即使语义分数低于阈值，
+        也先把文档片段交给生成模型判断；若问题确实与资料无关，生成提示会允许它按
+        通用问题回答。返回 ``(hits, preferred)``。
+        """
+        if not conversation_id:
+            return vector_hits, False
+
+        sources = self.qdrant.list_sources(owner=owner, conversation_id=conversation_id)
+        if len(sources) != 1:
+            return vector_hits, False
+
+        source = sources[0]
+        full = self.qdrant.scroll_by_source(
+            source,
+            owner=owner,
+            conversation_id=conversation_id,
+            limit=self.settings.rag_aggregate_max_chunks,
+        )
+        if not full:
+            return vector_hits, False
+
+        logger.info(
+            "single-document retrieval: source=%s, %d chunks pulled (was %d hits)",
+            source, len(full), len(vector_hits),
+        )
+        return full, True
+
     def retrieve(
         self,
         query: str,
@@ -347,6 +382,11 @@ class RagService:
         vector_hits, aggregate = self.resolve_vector_hits(
             query, vector_hits, owner=owner, conversation_id=conversation_id
         )
+        single_document = False
+        if not aggregate:
+            vector_hits, single_document = self.prefer_single_conversation_document(
+                vector_hits, owner=owner, conversation_id=conversation_id
+            )
 
         try:
             keywords = self.llm.extract_keywords(query) or [query[:32]]
@@ -354,7 +394,7 @@ class RagService:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Neo4j retrieval failed: %s", exc)
 
-        return {"qdrant": vector_hits, "neo4j": graph_hits, "aggregate": aggregate}
+        return {"qdrant": vector_hits, "neo4j": graph_hits, "aggregate": aggregate or single_document}
 
     def build_context(
         self,
