@@ -70,6 +70,55 @@ def test_parse_pdf_expands_merged_table_notes(monkeypatch):
     assert "G2026020703" in parsed
 
 
+def test_parse_pdf_expands_merged_table_notes_for_vision_requirements(monkeypatch):
+    note = "\u65e0\u9ad8\u5ea6\u8fd1\u89c6\uff0c\u8eab\u4f53\u7d20\u8d28\n\u597d\u3002"
+    normalized_note = "\u65e0\u9ad8\u5ea6\u8fd1\u89c6\uff0c\u8eab\u4f53\u7d20\u8d28 \u597d\u3002"
+    header = "\u5c0f\u8ba1 52"
+    footer = "\u5c0f\u8ba1 96"
+    text = (
+        f"{header} "
+        "35 G2026020401 Guangzhou locomotive driving maintenance Guangdong 16 "
+        "mechanical engineering automation "
+        f"{note} "
+        "36 G2026020402 Guangzhou locomotive overhaul Guangdong 9 "
+        "37 G2026020403 Shantou locomotive driving Guangdong 12 "
+        f"{footer}"
+    )
+    fake_page = types.SimpleNamespace(extract_text=lambda: text)
+    fake_reader = lambda stream: types.SimpleNamespace(pages=[fake_page])
+    fake_mod = types.ModuleType("pypdf")
+    fake_mod.PdfReader = fake_reader
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_mod)
+
+    parsed = parse_upload("jobs.pdf", b"%PDF- fake")
+
+    assert parsed.count(f"\u5907\u6ce8\uff1a{normalized_note}") == 3
+    assert "G2026020402" in parsed
+    assert "G2026020403" in parsed
+
+
+def test_parse_pdf_adds_structured_job_records(monkeypatch):
+    note = "\u65e0\u9ad8\u5ea6\u8fd1\u89c6\uff0c\u8eab\u4f53\u7d20\u8d28\u597d\u3002"
+    text = (
+        "\u5c0f\u8ba1 52 "
+        "35 G2026020401 Guangzhou locomotive driving maintenance Guangdong 16 "
+        f"{note} "
+        "36 G2026020402 Guangzhou locomotive overhaul Guangdong 9 "
+        "\u5c0f\u8ba1 96"
+    )
+    fake_page = types.SimpleNamespace(extract_text=lambda: text)
+    fake_reader = lambda stream: types.SimpleNamespace(pages=[fake_page])
+    fake_mod = types.ModuleType("pypdf")
+    fake_mod.PdfReader = fake_reader
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_mod)
+
+    parsed = parse_upload("jobs.pdf", b"%PDF- fake")
+
+    assert "\u3010PDF\u5c97\u4f4d\u884c\u7ed3\u6784\u5316\u7d22\u5f15\u3011" in parsed
+    assert "\u5c97\u4f4d\u7f16\u53f7=G2026020402" in parsed
+    assert f"\u5907\u6ce8={note}" in parsed
+
+
 def test_parse_pdf_missing_lib(monkeypatch):
     # 未装 pypdf 时给出可读错误
     import sys
@@ -121,6 +170,14 @@ def test_parse_csv_renders_markdown_table():
     assert "| Bob | 25 |" in text
 
 
+def test_parse_csv_adds_structured_records():
+    text = parse_upload("data.csv", b"name,age\nAlice,30\nBob,25\n")
+
+    assert "\u3010\u7ed3\u6784\u5316\u8868\u683c\u8bb0\u5f55\uff1aCSV\u3011" in text
+    assert "\u8bb0\u5f551: name=Alice | age=30" in text
+    assert "\u8bb0\u5f552: name=Bob | age=25" in text
+
+
 def test_parse_csv_is_structured_not_raw_text():
     # csv 不应再是原始逗号串，应含表格分隔符
     assert "|" in parse_upload("data.csv", b"a,b\n1,2\n")
@@ -170,6 +227,22 @@ def test_parse_xlsx_multiple_sheets_merged():
     text = parse_upload("multi.xlsx", buf.getvalue())
     assert "## Sheet: S1" in text
     assert "## Sheet: S2" in text
+
+
+def test_parse_xlsx_adds_structured_records():
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Inventory"
+    ws.append(["item", "qty"])
+    ws.append(["apple", 10])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    text = parse_upload("inventory.xlsx", buf.getvalue())
+
+    assert "\u3010\u7ed3\u6784\u5316\u8868\u683c\u8bb0\u5f55\uff1aSheet Inventory\u3011" in text
+    assert "\u8bb0\u5f551: item=apple | qty=10" in text
 
 
 def test_parse_xlsx_preserves_formula_only_sheets():

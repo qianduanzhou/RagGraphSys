@@ -236,6 +236,31 @@ export async function deleteConversationDoc(
   return res.json();
 }
 
+export async function downloadConversationSourceFile(
+  conversationId: string,
+  source: string
+): Promise<void> {
+  const res = await fetch(
+    `${BASE}/conversations/${conversationId}/documents/download?source=${encodeURIComponent(source)}`,
+    {
+      headers: authHeaders(),
+    }
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = source.split(/[\\/]/).pop() || source || "download";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /**
  * 对话级流式问答：后端从对话记录加载历史并写回，前端只发 message + mode。
  */

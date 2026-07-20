@@ -1,9 +1,9 @@
 export type Role = "user" | "assistant";
 
 export interface SourceRef {
-  type: "qdrant" | "neo4j" | "web";
+  type: "qdrant" | "neo4j" | "web" | "source_file";
   content: string;
-  score?: number;
+  score?: number | null;
   source?: string;
   // web 来源额外字段
   title?: string;
@@ -27,19 +27,27 @@ export const PIPELINE: ReadonlyArray<{ key: string; label: string }> = [
   { key: "llm_node", label: "生成" },
 ];
 
-export type ChatMode = "rag" | "multi";
+export type ChatMode = "rag" | "source" | "multi";
 
 /** 多智能体模式管线，key 与多智能体 LangGraph 节点名一一对应。 */
 export const MULTI_AGENT_PIPELINE: ReadonlyArray<{ key: string; label: string }> = [
   { key: "dispatch_node", label: "调度" },
   { key: "rag_agent_node", label: "RAG智能体" },
+  { key: "source_agent_node", label: "源文件智能体" },
   { key: "web_agent_node", label: "联网智能体" },
   { key: "integration_node", label: "整合" },
 ];
 
+export const SOURCE_PIPELINE: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "source_parse_node", label: "源文件解析" },
+  { key: "llm_node", label: "生成" },
+];
+
 export interface NodeUpdate {
+  status?: StepStatus;
   needs_rag?: boolean;
   used_rag?: boolean;
+  used_source?: boolean;
   used_web?: boolean;
   hits?: number;
   sources?: SourceRef[];
@@ -55,6 +63,7 @@ export interface ChatMessage {
   content: string;
   sources?: SourceRef[];
   usedRag?: boolean;
+  usedSource?: boolean;
   usedWeb?: boolean;
   error?: boolean;
   streaming?: boolean;
@@ -62,6 +71,7 @@ export interface ChatMessage {
   steps?: PipelineStep[];
   ragAgentAnswer?: string; // 多智能体：RAG 智能体原始回答（折叠面板）
   webAgentAnswer?: string; // 多智能体：联网智能体原始回答（折叠面板）
+  sourceAgentAnswer?: string; // 多智能体：源文件智能体原始回答（折叠面板）
 }
 
 export interface StreamCallbacks {

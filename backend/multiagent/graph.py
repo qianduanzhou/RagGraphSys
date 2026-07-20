@@ -19,14 +19,16 @@ def build_multi_agent_graph(
     rag: RagService,
     web: WebSearchService,
     settings: Settings,
+    source_files=None,
 ) -> CompiledStateGraph:
     """将多智能体节点与边连接为编译后的 StateGraph。"""
-    nodes = MultiAgentNodes(llm=llm, rag=rag, web=web, settings=settings)
+    nodes = MultiAgentNodes(llm=llm, rag=rag, web=web, settings=settings, source_files=source_files)
 
     graph = StateGraph(MultiAgentState)
 
     graph.add_node("dispatch_node", nodes.dispatch)
     graph.add_node("rag_agent_node", nodes.rag_agent)
+    graph.add_node("source_agent_node", nodes.source_agent)
     graph.add_node("web_agent_node", nodes.web_agent)
     graph.add_node("integration_node", nodes.integration)
 
@@ -34,9 +36,10 @@ def build_multi_agent_graph(
     graph.add_edge(START, "dispatch_node")
     graph.add_conditional_edges("dispatch_node", route_after_dispatch)
     graph.add_edge("rag_agent_node", "integration_node")
+    graph.add_edge("source_agent_node", "integration_node")
     graph.add_edge("web_agent_node", "integration_node")
     graph.add_edge("integration_node", END)
 
     compiled = graph.compile()
-    logger.info("MultiAgent graph compiled: dispatch->(rag,web)->integration")
+    logger.info("MultiAgent graph compiled: dispatch->(rag,source,web)->integration")
     return compiled

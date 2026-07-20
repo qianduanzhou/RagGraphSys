@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import main
 from api import _defer_graph_extraction, _sse, _summarize_update
 from services.auth_service import AuthService
+from services.source_file_store import SourceFileStore
 
 
 # --------------------------------------------------------------------------- #
@@ -59,6 +60,7 @@ def client(tmp_path):
         session = auth.register("testuser", "password123!")
         main.app.state.auth = auth
         main.app.state.conversations = ConversationService(tmp_path / "conversations.json")
+        main.app.state.source_files = SourceFileStore(tmp_path / "source_files")
         c.headers.update({"Authorization": f"Bearer {session['token']}"})
         yield c
 
@@ -388,6 +390,20 @@ def test_summarize_web_agent_includes_answer():
     assert out == {"answer": "WA", "sources": [{"type": "web", "url": "http://x"}], "hits": 1, "used_web": True}
 
 
+def test_summarize_source_agent_includes_answer():
+    out = _summarize_update("source_agent_node", {
+        "source_agent_answer": "SA",
+        "source_agent_sources": [{"type": "source_file", "content": "c"}],
+        "used_source": True,
+    })
+    assert out == {
+        "answer": "SA",
+        "sources": [{"type": "source_file", "content": "c"}],
+        "hits": 1,
+        "used_source": True,
+    }
+
+
 def test_summarize_dispatch_is_empty():
     assert _summarize_update("dispatch_node", {}) == {}
 
@@ -529,6 +545,7 @@ def test_upload_conversation_documents_ingests_with_conv_id(client):
     # 文档登记到对话清单
     docs = client.get(f"/api/conversations/{cid}").json()["documents"]
     assert [d["name"] for d in docs] == ["a.py"]
+    assert main.app.state.source_files.read("testuser", cid, "a.py") == b"x = 1"
 
 
 def test_delete_conversation_document(client):
@@ -592,3 +609,58 @@ def test_conversation_chat_stream_writes_back(client, monkeypatch):
     msgs = client.get(f"/api/conversations/{cid}").json()["messages"]
     assert [m["role"] for m in msgs] == ["user", "assistant"]
     assert msgs[1]["content"] == "答案"
+
+
+def test_conversation_source_mode_reads_saved_source_files(client, monkeypatch):
+    from tests.conftest import MockLLM
+
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    main.app.state.source_files.save("testuser", cid, "note.txt", b"source says apple")
+    monkeypatch.setattr(main.app.state, "llm", MockLLM(stream_tokens=["SRC", "ANS"]))
+
+    with client.stream(
+        "POST",
+        f"/api/conversations/{cid}/chat/stream",
+        json={"message": "what does the doc say", "mode": "source"},
+    ) as r:
+        body = "".join(r.iter_text())
+
+    assert '"node": "source_parse_node"' in body or '"node":"source_parse_node"' in body
+    assert '"text": "S"' in body
+    assert '"text": "A"' in body
+    msgs = client.get(f"/api/conversations/{cid}").json()["messages"]
+    assert msgs[-1]["content"] == "SRCANS"
+
+
+def test_conversation_source_mode_splits_large_chunks_into_character_deltas(client, monkeypatch):
+    from tests.conftest import MockLLM
+
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    main.app.state.source_files.save("testuser", cid, "note.txt", b"source says apple")
+    monkeypatch.setattr(main.app.state, "llm", MockLLM(stream_tokens=["SRC"]))
+
+    with client.stream(
+        "POST",
+        f"/api/conversations/{cid}/chat/stream",
+        json={"message": "what does the doc say", "mode": "source"},
+    ) as r:
+        body = "".join(r.iter_text())
+
+    frames = []
+    for block in body.split("\n\n"):
+        data_lines = [ln for ln in block.split("\n") if ln.startswith("data:")]
+        if data_lines:
+            frames.append(json.loads(data_lines[0][len("data:"):].strip()))
+    deltas = [f.get("text") for f in frames if f.get("type") == "delta"]
+    assert deltas == ["S", "R", "C"]
+
+
+def test_download_conversation_source_file(client):
+    cid = client.post("/api/conversations", json={}).json()["id"]
+    main.app.state.source_files.save("testuser", cid, "note.txt", b"raw source")
+
+    r = client.get(f"/api/conversations/{cid}/documents/download", params={"source": "note.txt"})
+
+    assert r.status_code == 200
+    assert r.content == b"raw source"
+    assert "attachment" in r.headers["content-disposition"]

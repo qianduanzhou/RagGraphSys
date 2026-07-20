@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     auth_db_path: str = str(BASE_DIR / "data" / "users.json")
     conversations_db_path: str = str(BASE_DIR / "data" / "conversations.json")
+    source_files_dir: str = str(BASE_DIR / "data" / "source_files")
+    source_direct_max_chars: int = 60000
 
     @property
     def cors_origins_list(self) -> list[str]:

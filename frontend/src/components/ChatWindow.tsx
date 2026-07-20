@@ -11,6 +11,7 @@ interface Props {
   mode: ChatMode;
   onModeChange: (m: ChatMode) => void;
   webSearchAvailable: boolean;
+  onDownloadSource?: (source: string) => void;
 }
 
 export default function ChatWindow({
@@ -20,6 +21,7 @@ export default function ChatWindow({
   mode,
   onModeChange,
   webSearchAvailable,
+  onDownloadSource,
 }: Props) {
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -57,13 +59,23 @@ export default function ChatWindow({
       <div className="chat-scroll" ref={scrollRef}>
         <div className="chat-inner">
           {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
+            <MessageBubble key={m.id} message={m} onDownloadSource={onDownloadSource} />
           ))}
         </div>
       </div>
 
       <div className="composer">
         <div className="mode-switch" role="tablist" aria-label="问答模式">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "source"}
+            className={mode === "source" ? "active" : ""}
+            title="直接读取保存的源文件，由大模型解析回答"
+            onClick={() => onModeChange("source")}
+          >
+            源文件解析
+          </button>
           <button
             type="button"
             role="tab"
@@ -108,7 +120,7 @@ export default function ChatWindow({
           </button>
         </div>
         <p className="composer-note">
-          Hybrid RAG · 基于 Qdrant 向量召回 + Neo4j 图谱推理 · 大模型 流式生成
+          Hybrid RAG · 向量/图谱检索 · 源文件直读 · 多智能体对比
         </p>
       </div>
     </div>

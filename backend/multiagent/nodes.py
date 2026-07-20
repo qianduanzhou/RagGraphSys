@@ -20,6 +20,8 @@ from core.logger import get_logger
 from core.utils import truncate
 from rag.rag_service import RagService
 from services.llm_service import LLMService
+from services.source_answer_service import build_source_context, source_answer_messages
+from services.source_file_store import SourceFileStore
 from services.web_search_service import WebSearchService
 
 logger = get_logger(__name__)
@@ -32,9 +34,12 @@ class MultiAgentState(TypedDict, total=False):
     history: List[Dict[str, str]]
     rag_agent_answer: str
     rag_agent_sources: List[Dict[str, Any]]
+    source_agent_answer: str
+    source_agent_sources: List[Dict[str, Any]]
     web_agent_answer: str
     web_sources: List[Dict[str, Any]]
     used_rag: bool
+    used_source: bool
     used_web: bool
     rag_aggregate: bool  # RAG 命中为整文档拉取（聚合查询），整合层也需放宽输出上限
     answer: str
@@ -47,11 +52,19 @@ class MultiAgentState(TypedDict, total=False):
 class MultiAgentNodes:
     """持有服务依赖，对外暴露多智能体图的节点可调用对象。"""
 
-    def __init__(self, llm: LLMService, rag: RagService, web: WebSearchService, settings: Settings):
+    def __init__(
+        self,
+        llm: LLMService,
+        rag: RagService,
+        web: WebSearchService,
+        settings: Settings,
+        source_files: SourceFileStore | None = None,
+    ):
         self.llm = llm
         self.rag = rag
         self.web = web
         self.settings = settings
+        self.source_files = source_files
 
     # ------------------------------------------------------------------ #
     # dispatch_node — 启动多智能体（透传 + 记日志）
@@ -84,6 +97,13 @@ class MultiAgentNodes:
             "回答简洁、准确。"
         )
         system += f"\n\n知识库资料：\n{context}" if context else "\n\n（知识库中无相关资料）"
+        if aggregate and context:
+            system += (
+                "\n\n聚合/筛选题规则：如果用户要求“所有、全部、列出、统计、筛选”，"
+                "必须优先扫描知识库资料中的【结构化表格记录】、【PDF岗位行结构化索引】、"
+                "【PDF表格合并备注展开】等记录块；逐条匹配条件后再回答。"
+                "不要只根据第一条命中片段下结论；能列全时列全，资料明显被截断时要说明可能不完整。"
+            )
 
         # 聚合型回答（整文档拉取）篇幅长，放宽输出 token 上限
         gen_max_tokens = self.settings.llm_max_tokens_aggregate if aggregate else None
@@ -105,6 +125,36 @@ class MultiAgentNodes:
             "rag_agent_sources": sources,
             "used_rag": used_rag,
             "rag_aggregate": aggregate,
+        }
+
+    # ------------------------------------------------------------------ #
+    # source_agent_node — 读取源文件并直接交给大模型解析回答
+    # ------------------------------------------------------------------ #
+    def source_agent(self, state: MultiAgentState) -> Dict[str, Any]:
+        question = state["question"]
+        history = state.get("history", []) or []
+        try:
+            context = build_source_context(
+                self.source_files,
+                owner=state.get("owner"),
+                conversation_id=state.get("conversation_id"),
+                max_chars=self.settings.source_direct_max_chars,
+            )
+            messages = source_answer_messages(question, context, history)
+            answer = self.llm.chat(messages, max_tokens=self.settings.llm_max_tokens_aggregate)
+            sources = context.sources
+            used_source = bool(context.context)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("source_agent generation failed: %s", exc)
+            answer = "（源文件解析不可用）"
+            sources = []
+            used_source = False
+
+        logger.info("source_agent: used_source=%s, sources=%d", used_source, len(sources))
+        return {
+            "source_agent_answer": answer,
+            "source_agent_sources": sources,
+            "used_source": used_source,
         }
 
     # ------------------------------------------------------------------ #
@@ -163,21 +213,25 @@ class MultiAgentNodes:
         question = state["question"]
         history = state.get("history", []) or []
         rag_answer = state.get("rag_agent_answer", "") or ""
+        source_answer = state.get("source_agent_answer", "") or ""
         web_answer = state.get("web_agent_answer", "") or ""
         iterations = state.get("iterations", 0)
 
         system = (
-            "你是整合助手。综合下方「知识库回答」与「联网回答」，给用户一个最终答案。\n"
+            "你是整合助手。综合下方「知识库回答」「源文件解析回答」与「联网回答」，给用户一个最终答案。\n"
             "规则：\n"
-            "- 涉及用户上传文档的内容以「知识库回答」为准；最新/外部/通用信息以「联网回答」为准；\n"
+            "- 涉及用户上传文档的内容时，同时对比「知识库回答」和「源文件解析回答」；两者冲突时优先相信源文件解析回答，并说明差异；\n"
+            "- 最新/外部/通用信息以「联网回答」为准；\n"
             "- 知识库的文档内容用 Markdown 引用块（每行以 > 开头）标注；\n"
             "- 联网内容用 [标题](url) 链接标注来源；\n"
             "- 若某一方明确表示无相关内容（如「知识库中无相关内容」「联网未找到相关结果」），"
             "则以另一方为主，不要重复该说明；\n"
+            "- 若知识库回答是完整清单、筛选结果或统计结果，保留全部条目，不要压缩成示例；\n"
             "- 不要赘述两个来源的过程，直接给出整合后的答案。\n"
             "回答简洁、准确、有条理。"
         )
         system += f"\n\n知识库回答：\n{rag_answer or '（空）'}"
+        system += f"\n\n源文件解析回答：\n{source_answer or '（空）'}"
         system += f"\n\n联网回答：\n{web_answer or '（空）'}"
 
         messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": question}]
@@ -207,5 +261,5 @@ class MultiAgentNodes:
 # 条件路由：dispatch 后并行扇出到两个 agent
 # ---------------------------------------------------------------------- #
 def route_after_dispatch(state: MultiAgentState) -> List[str]:
-    """dispatch 后扇出到 RAG 与联网两个 agent（并行）。"""
-    return ["rag_agent_node", "web_agent_node"]
+    """dispatch 后扇出到 RAG、源文件解析与联网三个 agent（并行）。"""
+    return ["rag_agent_node", "source_agent_node", "web_agent_node"]

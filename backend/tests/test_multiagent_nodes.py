@@ -191,4 +191,4 @@ def test_integration_default_max_tokens_when_not_aggregate(settings):
 
 # --- route ---
 def test_route_after_dispatch_fans_out():
-    assert ma.route_after_dispatch({}) == ["rag_agent_node", "web_agent_node"]
+    assert ma.route_after_dispatch({}) == ["rag_agent_node", "source_agent_node", "web_agent_node"]

@@ -7,7 +7,13 @@ import type { ChatMessage } from "../types";
 import SourceBadge from "./SourceBadge";
 import "./MessageBubble.css";
 
-export default function MessageBubble({ message }: { message: ChatMessage }) {
+export default function MessageBubble({
+  message,
+  onDownloadSource,
+}: {
+  message: ChatMessage;
+  onDownloadSource?: (source: string) => void;
+}) {
   const isUser = message.role === "user";
   const sources = !isUser ? message.sources ?? [] : [];
   const showSources = sources.length > 0;
@@ -15,6 +21,9 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const vectorN = sources.filter((s) => s.type === "qdrant").length;
   const graphN = sources.filter((s) => s.type === "neo4j").length;
+  const sourceN = sources.filter((s) => s.type === "source_file").length;
+  const assistantLabel =
+    message.mode === "source" ? "源文件助手" : message.mode === "multi" ? "多智能体助手" : "RAG 助手";
 
   return (
     <div className={`msg ${isUser ? "msg-user" : "msg-bot"} ${message.error ? "is-error" : ""}`}>
@@ -22,7 +31,7 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
         {isUser ? <User size={16} /> : <Sparkles size={16} />}
       </div>
       <div className="msg-body">
-        <div className="msg-role">{isUser ? "你" : "RAG 助手"}</div>
+        <div className="msg-role">{isUser ? "你" : assistantLabel}</div>
 
         {!isUser && message.streaming && message.steps && message.steps.length > 0 && (
           <div className="pipeline">
@@ -74,7 +83,9 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
               </span>
               {vectorN > 0 && <span className="ms-sum ms-qd">向量 {vectorN}</span>}
               {graphN > 0 && <span className="ms-sum ms-neo">图谱 {graphN}</span>}
+              {sourceN > 0 && <span className="ms-sum ms-source">源文件 {sourceN}</span>}
               {message.usedRag && <span className="rag-flag">混合检索</span>}
+              {message.usedSource && <span className="source-flag">源文件解析</span>}
               <span className="ms-chev">{sourcesOpen ? "收起 ▲" : "展开 ▼"}</span>
             </button>
             {sourcesOpen && (
@@ -106,7 +117,7 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
                       </span>
                     )
                   ) : (
-                    <SourceBadge key={i} source={s} />
+                    <SourceBadge key={i} source={s} onDownloadSource={onDownloadSource} />
                   )
                 )}
               </div>
@@ -116,12 +127,18 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
 
         {/* 多智能体模式：默认折叠的 RAG / 联网 智能体原始回答面板 */}
         {message.mode === "multi" &&
-          (message.ragAgentAnswer || message.webAgentAnswer) && (
+          (message.ragAgentAnswer || message.sourceAgentAnswer || message.webAgentAnswer) && (
             <div className="agent-panels">
               {message.ragAgentAnswer && (
                 <details className="agent-panel">
                   <summary>📄 查看 RAG 智能体原始回答</summary>
                   <div className="agent-panel-body">{message.ragAgentAnswer}</div>
+                </details>
+              )}
+              {message.sourceAgentAnswer && (
+                <details className="agent-panel">
+                  <summary>📑 查看源文件智能体原始回答</summary>
+                  <div className="agent-panel-body">{message.sourceAgentAnswer}</div>
                 </details>
               )}
               {message.webAgentAnswer && (

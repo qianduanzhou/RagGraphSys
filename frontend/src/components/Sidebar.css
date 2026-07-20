@@ -253,9 +253,20 @@
   color: var(--danger);
   background: var(--danger-soft);
 }
-.doc-del {
+.doc-actions {
   flex-shrink: 0;
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.doc-item:hover .doc-actions,
+.doc-actions:focus-within {
+  opacity: 1;
+}
+.doc-action {
   display: grid;
   place-items: center;
   width: 24px;
@@ -266,19 +277,19 @@
   border-radius: 6px;
   color: var(--text-dim);
   cursor: pointer;
-  opacity: 0;
   transition: all 0.18s ease;
 }
-.doc-item:hover .doc-del,
-.doc-del:focus-visible {
-  opacity: 1;
+.doc-action:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 .doc-del:hover:not(:disabled) {
   color: var(--danger);
   border-color: var(--danger);
   background: var(--danger-soft);
 }
-.doc-del:disabled {
+.doc-action:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

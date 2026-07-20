@@ -6,9 +6,10 @@ import AuthPage from "./components/AuthPage";
 import {
  chatStreamInConversation,
   clearConversation,
- createConversation,
- deleteConversation,
+  createConversation,
+  deleteConversation,
   deleteConversationDoc,
+  downloadConversationSourceFile,
   fetchCurrentUser,
   fetchConversationGraphTasks,
   fetchHealth,
@@ -24,6 +25,7 @@ import { clearSession, loadSession, saveSession } from "./auth-storage";
 import {
   MULTI_AGENT_PIPELINE,
   PIPELINE,
+  SOURCE_PIPELINE,
   type AuthSession,
   type BatchIngestResponse,
   type ChatMessage,
@@ -270,7 +272,7 @@ export default function App() {
   const handleSend = useCallback(
     async (text: string) => {
       if (!currentId) return;
-      const pipeline = mode === "multi" ? MULTI_AGENT_PIPELINE : PIPELINE;
+      const pipeline = mode === "multi" ? MULTI_AGENT_PIPELINE : mode === "source" ? SOURCE_PIPELINE : PIPELINE;
       const userMsg: ChatMessage = { id: uid(), role: "user", content: text };
       const assistantId = uid();
       const assistantMsg: ChatMessage = {
@@ -307,9 +309,12 @@ export default function App() {
                   if (node === "dispatch_node") {
                     setStep("dispatch_node", "done");
                     setStep("rag_agent_node", "active");
+                    setStep("source_agent_node", "active");
                     setStep("web_agent_node", "active");
                   } else if (node === "rag_agent_node") {
                     setStep("rag_agent_node", "done");
+                  } else if (node === "source_agent_node") {
+                    setStep("source_agent_node", "done");
                   } else if (node === "web_agent_node") {
                     setStep("web_agent_node", "done");
                   } else if (node === "integration_node") {
@@ -318,8 +323,12 @@ export default function App() {
                 } else {
                   const idx = steps.findIndex((s) => s.key === node);
                   if (idx >= 0) {
-                    steps[idx] = { ...steps[idx], status: "done" };
-                    if (idx + 1 < steps.length && steps[idx + 1].status !== "done") {
+                    const nextStatus =
+                      update.status === "active" || update.status === "done"
+                        ? update.status
+                        : "done";
+                    steps[idx] = { ...steps[idx], status: nextStatus };
+                    if (nextStatus === "done" && idx + 1 < steps.length && steps[idx + 1].status !== "done") {
                       steps[idx + 1] = { ...steps[idx + 1], status: "active" };
                     }
                   }
@@ -330,6 +339,10 @@ export default function App() {
                   next.ragAgentAnswer = update.answer;
                   if (update.sources) next.sources = update.sources;
                   if (typeof update.used_rag === "boolean") next.usedRag = update.used_rag;
+                } else if (node === "source_agent_node") {
+                  next.sourceAgentAnswer = update.answer;
+                  next.sources = [...(m.sources ?? []), ...(update.sources ?? [])];
+                  if (typeof update.used_source === "boolean") next.usedSource = update.used_source;
                 } else if (node === "web_agent_node") {
                   next.webAgentAnswer = update.answer;
                   next.sources = [...(m.sources ?? []), ...(update.sources ?? [])];
@@ -337,6 +350,7 @@ export default function App() {
                 } else {
                   if (update.sources) next.sources = update.sources;
                   if (typeof update.used_rag === "boolean") next.usedRag = update.used_rag;
+                  if (typeof update.used_source === "boolean") next.usedSource = update.used_source;
                 }
                 return next;
               }),
@@ -389,6 +403,26 @@ export default function App() {
     [currentId, refreshCurrent, refreshGraphTasks, refreshHealth]
   );
 
+  const handleDownloadSource = useCallback(
+    async (source: string) => {
+      if (!currentId) return;
+      try {
+        await downloadConversationSourceFile(currentId, source);
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: uid(),
+            role: "assistant",
+            content: `下载失败：${(err as Error).message || "源文件不可用"}`,
+            error: true,
+          },
+        ]);
+      }
+    },
+    [currentId]
+  );
+
   const handleClear = useCallback(async () => {
     if (!currentId) {
       setMessages([WELCOME]);
@@ -431,6 +465,7 @@ export default function App() {
         health={health}
         onUploadFiles={handleUploadFiles}
         onDeleteDocs={handleDeleteDocs}
+        onDownloadDoc={handleDownloadSource}
         onRefresh={refreshHealth}
         disabled={streaming}
       />
@@ -480,6 +515,7 @@ export default function App() {
           mode={mode}
           onModeChange={setMode}
           webSearchAvailable={webSearchAvailable}
+          onDownloadSource={handleDownloadSource}
         />
       </main>
     </div>

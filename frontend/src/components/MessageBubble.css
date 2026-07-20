@@ -105,6 +105,11 @@
   color: var(--graph);
   background: var(--graph-soft);
 }
+.ms-source {
+  color: var(--text-muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+}
 .ms-chev {
   margin-left: auto;
   letter-spacing: 0;
@@ -118,6 +123,15 @@
   background: var(--accent-soft);
   color: var(--accent);
   border: 1px solid var(--accent-border);
+}
+.source-flag {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--panel-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border-soft);
 }
 .msg-sources-list {
   display: flex;

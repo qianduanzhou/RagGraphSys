@@ -24,6 +24,7 @@ from services.auth_service import AuthService
 from services.conversation_service import ConversationService
 from services.embedding_service import EmbeddingService
 from services.llm_service import LLMService
+from services.source_file_store import SourceFileStore
 from services.web_search_service import WebSearchService
 
 settings = get_settings()
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI):
 
     auth = AuthService(settings.auth_db_path)
     conversations = ConversationService(settings.conversations_db_path)
+    source_files = SourceFileStore(settings.source_files_dir)
     llm = LLMService(settings)
     embedding = EmbeddingService(settings)
     qdrant = QdrantStore(settings, embedding)
@@ -75,7 +77,9 @@ async def lifespan(app: FastAPI):
     _retry_ready("Neo4j", neo4j.verify)
 
     app.state.auth = auth
+    app.state.settings = settings
     app.state.conversations = conversations
+    app.state.source_files = source_files
     app.state.llm = llm
     app.state.embedding = embedding
     app.state.qdrant = qdrant
@@ -85,7 +89,7 @@ async def lifespan(app: FastAPI):
 
     web = WebSearchService(settings)
     app.state.web = web
-    app.state.multi_agent_graph = build_multi_agent_graph(llm, rag, web, settings)
+    app.state.multi_agent_graph = build_multi_agent_graph(llm, rag, web, settings, source_files=source_files)
 
     logger.info("Application ready: http://%s:%d", settings.app_host, settings.app_port)
     yield

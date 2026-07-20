@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { CheckSquare, Database, FileArchive, FileText, GitBranch, RefreshCw, Trash2, UploadCloud, X } from "lucide-react";
+import { CheckSquare, Database, Download, FileArchive, FileText, GitBranch, RefreshCw, Trash2, UploadCloud, X } from "lucide-react";
 import type {
   BatchIngestResponse,
   ConversationDoc,
@@ -36,6 +36,7 @@ interface Props {
   onUploadFiles: (files: File[]) => Promise<BatchIngestResponse>;
   /** 批量删除文档（单删即长度 1）。 */
   onDeleteDocs: (sources: string[]) => Promise<void>;
+  onDownloadDoc: (source: string) => void;
   onRefresh: () => void;
   disabled?: boolean;
 }
@@ -90,6 +91,7 @@ export default function Sidebar({
   health,
   onUploadFiles,
   onDeleteDocs,
+  onDownloadDoc,
   onRefresh,
   disabled,
 }: Props) {
@@ -367,18 +369,32 @@ export default function Sidebar({
                     )}
                   </div>
                   {!docSelectMode && (
-                    <button
-                      type="button"
-                      className="doc-del"
-                      title="从当前对话删除该文档"
-                      disabled={isDeleting || disabled}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        requestDeleteDocs([d.name], `「${d.name}」`);
-                      }}
-                    >
-                      {isDeleting ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}
-                    </button>
+                    <div className="doc-actions">
+                      <button
+                        type="button"
+                        className="doc-action"
+                        title="下载源文件"
+                        disabled={disabled}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDownloadDoc(d.name);
+                        }}
+                      >
+                        <Download size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="doc-action doc-del"
+                        title="从当前对话删除该文档"
+                        disabled={isDeleting || disabled}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestDeleteDocs([d.name], `「${d.name}」`);
+                        }}
+                      >
+                        {isDeleting ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}
+                      </button>
+                    </div>
                   )}
                 </div>
               );

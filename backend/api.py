@@ -9,15 +9,17 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.logger import get_logger
@@ -25,6 +27,7 @@ from services.auth_service import AuthError
 from services.archive import extract_zip
 from services.conversation_service import ConversationService
 from services.file_parser import ALLOWED_EXTS, parse_upload
+from services.source_answer_service import build_source_context, source_answer_messages
 
 logger = get_logger(__name__)
 
@@ -45,7 +48,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     history: Optional[List[ChatMessage]] = Field(default_factory=list)
-    mode: Literal["rag", "multi"] = "rag"
+    mode: Literal["rag", "source", "multi"] = "rag"
 
 
 class ChatResponse(BaseModel):
@@ -204,6 +207,62 @@ def _conversations(request: Request) -> ConversationService:
     if svc is None:
         raise HTTPException(status_code=503, detail="对话服务尚未初始化")
     return svc
+
+
+def _source_files(request: Request):
+    svc = getattr(request.app.state, "source_files", None)
+    if svc is None:
+        raise HTTPException(status_code=503, detail="源文件存储服务尚未初始化")
+    return svc
+
+
+def _llm(request: Request):
+    llm = getattr(request.app.state, "llm", None)
+    if llm is None:
+        raise HTTPException(status_code=503, detail="大模型服务尚未初始化")
+    return llm
+
+
+def _source_direct_payload(
+    request: Request,
+    question: str,
+    history: List[Dict[str, str]],
+    owner: str,
+    conversation_id: str | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], bool]:
+    settings = getattr(request.app.state, "settings", None)
+    max_chars = int(getattr(settings, "source_direct_max_chars", 60000) or 60000)
+    context = build_source_context(
+        _source_files(request),
+        owner=owner,
+        conversation_id=conversation_id,
+        max_chars=max_chars,
+    )
+    messages = source_answer_messages(question, context, history)
+    return messages, context.sources, bool(context.context)
+
+
+def _download_source_response(
+    request: Request,
+    owner: str,
+    conversation_id: str,
+    source: str,
+) -> Response:
+    store = _source_files(request)
+    try:
+        raw = store.read(owner, conversation_id, source)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="源文件不存在") from exc
+    filename = Path(source).name or "download"
+    quoted = quote(filename)
+    return Response(
+        content=raw,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def _require_conv(request: Request, conv_id: str, username: str) -> Dict[str, Any]:
@@ -448,6 +507,20 @@ def chat(
     request: Request,
     username: str = Depends(current_user),
 ) -> ChatResponse:
+    if payload.mode == "source":
+        try:
+            messages, sources, used_source = _source_direct_payload(
+                request,
+                payload.message,
+                _history_to_dicts(payload.history),
+                owner=username,
+            )
+            answer = _llm(request).chat(messages, max_tokens=getattr(request.app.state.settings, "llm_max_tokens_aggregate", None))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("source direct chat failed")
+            raise HTTPException(status_code=500, detail=f"源文件解析问答失败：{exc}") from exc
+        return ChatResponse(answer=answer, sources=sources, used_rag=used_source, iterations=1)
+
     graph = _select_graph(request, payload.mode)
     logger.info("/chat mode=%s question=%s", payload.mode, payload.message[:120])
     try:
@@ -485,6 +558,19 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+async def _source_delta_frames(text: str):
+    """Yield small SSE delta frames for source-file direct mode.
+
+    Some OpenAI-compatible providers stream fairly large chunks. Splitting
+    source-direct chunks here keeps the UI visibly incremental even when a
+    provider coalesces tokens.
+    """
+
+    for ch in text or "":
+        yield _sse({"type": "delta", "text": ch})
+        await asyncio.sleep(0.005)
+
+
 def _summarize_update(node: str, update: Any) -> dict:
     """将节点的状态更新投影为一个精简、便于客户端消费的负载。"""
     if not isinstance(update, dict):
@@ -510,6 +596,14 @@ def _summarize_update(node: str, update: Any) -> dict:
             "hits": len(sources),
             "used_rag": update.get("used_rag"),
         }
+    if node == "source_agent_node":
+        sources = update.get("source_agent_sources", []) or []
+        return {
+            "answer": update.get("source_agent_answer", ""),
+            "sources": sources,
+            "hits": len(sources),
+            "used_source": update.get("used_source"),
+        }
     if node == "web_agent_node":
         sources = update.get("web_sources", []) or []
         return {
@@ -529,6 +623,46 @@ async def chat_stream(
     request: Request,
     username: str = Depends(current_user),
 ) -> StreamingResponse:
+    if payload.mode == "source":
+        initial_history = _history_to_dicts(payload.history)
+
+        async def source_event_stream():
+            try:
+                yield _sse({"type": "node", "node": "source_parse_node", "update": {"status": "active"}})
+                messages, sources, used_source = _source_direct_payload(
+                    request,
+                    payload.message,
+                    initial_history,
+                    owner=username,
+                )
+                yield _sse({
+                    "type": "node",
+                    "node": "source_parse_node",
+                    "update": {"status": "done", "sources": sources, "used_rag": used_source, "used_source": used_source},
+                })
+                yield _sse({"type": "node", "node": "llm_node", "update": {"status": "active"}})
+                for token in _llm(request).chat_stream(
+                    messages,
+                    max_tokens=getattr(request.app.state.settings, "llm_max_tokens_aggregate", None),
+                ):
+                    async for frame in _source_delta_frames(token):
+                        yield frame
+                yield _sse({"type": "node", "node": "llm_node", "update": {"status": "done", "iterations": 1}})
+                yield _sse({"type": "done"})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("source direct stream failed: %s", exc)
+                yield _sse({"type": "error", "message": f"源文件解析问答失败：{exc}"})
+
+        return StreamingResponse(
+            source_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
     """SSE 流：`node` 帧（updates 模式的流水线进度）与 `delta`（custom 模式的字符增量）交替输出。"""
     graph = _select_graph(request, payload.mode)
 
@@ -606,6 +740,7 @@ async def ingest_file(
 
     try:
         stats = rag.ingest_text(text, source=name, owner=username, extract_graph=False)
+        _source_files(request).save(username, None, name, raw)
         _defer_graph_extraction(rag, stats, name, username)
     except Exception as exc:  # noqa: BLE001
         logger.exception("file ingest failed")
@@ -680,6 +815,7 @@ def delete_doc(
     _, rag = _state(request)
     try:
         stats = rag.delete_document(payload.source, owner=username)
+        _source_files(request).delete(username, None, payload.source)
     except Exception as exc:  # noqa: BLE001
         logger.exception("delete doc failed for %s", payload.source)
         raise HTTPException(status_code=500, detail=f"删除失败：{exc}") from exc
@@ -703,6 +839,8 @@ def delete_docs_batch(
     """
     _, rag = _state(request)
     stats = rag.delete_documents(payload.sources, owner=username)
+    for source in payload.sources:
+        _source_files(request).delete(username, None, source)
     return BatchDeleteResponse(**stats)
 
 
@@ -736,6 +874,7 @@ async def ingest_files(
         try:
             text = parse_upload(fname, raw)
             stats = rag.ingest_text(text, source=fname, owner=username, extract_graph=False)
+            _source_files(request).save(username, None, fname, raw)
             _defer_graph_extraction(rag, stats, fname, username)
             total_chunks += stats["chunks"]
             total_triples += stats["triples"]
@@ -836,6 +975,7 @@ def delete_conversation(
     if deleted is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问")
     cleanup = rag.delete_conversation(username, conv_id)
+    _source_files(request).delete_scope(username, conv_id)
     logger.info("Deleted conversation %s for %s: %s", conv_id, username, cleanup)
     return ConversationDeleteResponse(id=conv_id, **cleanup)
 
@@ -888,6 +1028,7 @@ async def upload_conversation_documents(
                 conversation_id=conv_id,
                 extract_graph=False,
             )
+            _source_files(request).save(username, conv_id, fname, raw)
             _defer_graph_extraction(rag, stats, fname, username, conv_id)
             total_chunks += stats["chunks"]
             total_triples += stats["triples"]
@@ -919,6 +1060,19 @@ def conversation_graph_tasks(
     return GraphTaskListResponse(tasks=_list_graph_tasks(username, conv_id))
 
 
+@router.get("/conversations/{conv_id}/documents/download")
+def download_conversation_document_source(
+    conv_id: str,
+    source: str,
+    request: Request,
+    username: str = Depends(current_user),
+) -> Response:
+    """Download the original uploaded source file for a conversation document."""
+
+    _require_conv(request, conv_id, username)
+    return _download_source_response(request, username, conv_id, source)
+
+
 @router.delete("/conversations/{conv_id}/documents", response_model=DeleteDocResponse)
 def delete_conversation_document(
     conv_id: str,
@@ -931,6 +1085,7 @@ def delete_conversation_document(
     _require_conv(request, conv_id, username)
     _, rag = _state(request)
     stats = rag.delete_document(payload.source, owner=username, conversation_id=conv_id)
+    _source_files(request).delete(username, conv_id, payload.source)
     svc.remove_document(username, conv_id, payload.source)
     _remove_graph_task(username, conv_id, payload.source)
     return DeleteDocResponse(
@@ -955,23 +1110,41 @@ def conversation_chat(
     conv = convs.get(username, conv_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问")
-    graph = _select_graph(request, payload.mode)
 
     history = [{"role": m["role"], "content": m["content"]} for m in conv.get("messages", [])]
     logger.info("/conversations/%s/chat mode=%s question=%s", conv_id, payload.mode, payload.message[:120])
-    try:
-        result = graph.invoke(
-            {
-                "question": payload.message,
-                "history": history,
-                "iterations": 0,
-                "owner": username,
-                "conversation_id": conv_id,
-            }
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("conversation graph invocation failed")
-        raise HTTPException(status_code=500, detail=f"问答流程执行失败：{exc}") from exc
+    if payload.mode == "source":
+        try:
+            messages, sources, used_source = _source_direct_payload(
+                request,
+                payload.message,
+                history,
+                owner=username,
+                conversation_id=conv_id,
+            )
+            answer = _llm(request).chat(
+                messages,
+                max_tokens=getattr(request.app.state.settings, "llm_max_tokens_aggregate", None),
+            )
+            result = {"answer": answer, "sources": sources, "used_rag": used_source, "iterations": 1}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("conversation source direct failed")
+            raise HTTPException(status_code=500, detail=f"源文件解析问答失败：{exc}") from exc
+    else:
+        graph = _select_graph(request, payload.mode)
+        try:
+            result = graph.invoke(
+                {
+                    "question": payload.message,
+                    "history": history,
+                    "iterations": 0,
+                    "owner": username,
+                    "conversation_id": conv_id,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("conversation graph invocation failed")
+            raise HTTPException(status_code=500, detail=f"问答流程执行失败：{exc}") from exc
 
     answer = result.get("answer", "")
     # 生成成功后写回对话记忆（本轮 user + assistant）
@@ -998,9 +1171,55 @@ async def conversation_chat_stream(
     conv = convs.get(username, conv_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问")
-    graph = _select_graph(request, payload.mode)
 
     history = [{"role": m["role"], "content": m["content"]} for m in conv.get("messages", [])]
+    if payload.mode == "source":
+        async def source_event_stream():
+            buffer: List[str] = []
+            try:
+                yield _sse({"type": "node", "node": "source_parse_node", "update": {"status": "active"}})
+                messages, sources, used_source = _source_direct_payload(
+                    request,
+                    payload.message,
+                    history,
+                    owner=username,
+                    conversation_id=conv_id,
+                )
+                yield _sse({
+                    "type": "node",
+                    "node": "source_parse_node",
+                    "update": {"status": "done", "sources": sources, "used_rag": used_source, "used_source": used_source},
+                })
+                yield _sse({"type": "node", "node": "llm_node", "update": {"status": "active"}})
+                for token in _llm(request).chat_stream(
+                    messages,
+                    max_tokens=getattr(request.app.state.settings, "llm_max_tokens_aggregate", None),
+                ):
+                    buffer.append(token)
+                    async for frame in _source_delta_frames(token):
+                        yield frame
+                yield _sse({"type": "node", "node": "llm_node", "update": {"status": "done", "iterations": 1}})
+                yield _sse({"type": "done"})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("conversation source stream failed: %s", exc)
+                yield _sse({"type": "error", "message": f"源文件解析问答失败：{exc}"})
+            finally:
+                answer = "".join(buffer)
+                convs.append_message(username, conv_id, "user", payload.message)
+                if answer:
+                    convs.append_message(username, conv_id, "assistant", answer)
+
+        return StreamingResponse(
+            source_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
+    graph = _select_graph(request, payload.mode)
     initial = {
         "question": payload.message,
         "history": history,

@@ -11,6 +11,9 @@
 .src.neo4j {
   border-color: var(--graph-border);
 }
+.src.source_file {
+  border-color: var(--border);
+}
 
 .src-head {
   display: flex;
@@ -42,6 +45,10 @@
   background: var(--graph);
   box-shadow: 0 0 8px var(--graph);
 }
+.src.source_file .src-dot {
+  background: var(--text-muted);
+  box-shadow: 0 0 8px var(--border);
+}
 .src-type {
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -51,6 +58,9 @@
 }
 .src.neo4j .src-type {
   color: var(--graph);
+}
+.src.source_file .src-type {
+  color: var(--text-muted);
 }
 .src-store {
   color: var(--text-dim);
@@ -79,6 +89,25 @@
   font-size: 10.5px;
   color: var(--text-dim);
   margin-bottom: 5px;
+}
+.src-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.src-download:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 .src-body p {
   margin: 0;

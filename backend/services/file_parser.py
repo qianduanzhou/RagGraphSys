@@ -46,6 +46,7 @@ ALLOWED_EXTS: Set[str] = TEXT_EXTS | CSV_EXTS | PDF_EXTS | WORD_EXTS | EXCEL_EXT
 # with the old parser, but truncation is now surfaced in parser warnings.
 TABLE_MAX_COLS = 50
 TABLE_MAX_ROWS = 5000
+STRUCTURED_RECORD_VALUE_LIMIT = 1200
 
 
 @dataclass
@@ -146,9 +147,12 @@ def _parse_pdf_document(raw: bytes) -> ParsedDocument:
                 warnings.append(f"PDF 第 {idx} 页未抽取到文本，可能是扫描页或图片页")
 
         text = _render_page_text(pages)
+        job_records = _render_pdf_job_records(text)
         expanded_notes = _expand_merged_pdf_table_notes(text)
         if expanded_notes:
             text = f"{text}\n\n{expanded_notes}".strip()
+        if job_records:
+            text = f"{text}\n\n{job_records}".strip()
 
         if text:
             elements = [
@@ -194,9 +198,12 @@ def _parse_pdf_with_pymupdf(raw: bytes) -> ParsedDocument | None:
             else:
                 warnings.append(f"PDF 第 {idx} 页未抽取到文本，可能需要 OCR")
         text = _render_page_text(pages)
+        job_records = _render_pdf_job_records(text)
         expanded_notes = _expand_merged_pdf_table_notes(text)
         if expanded_notes:
             text = f"{text}\n\n{expanded_notes}".strip()
+        if job_records:
+            text = f"{text}\n\n{job_records}".strip()
         elements = [
             ParsedElement("page", page_text, {"page": page_no, "engine": "pymupdf"})
             for page_no, page_text in pages
@@ -216,17 +223,51 @@ def _render_page_text(pages: list[tuple[int, str]]) -> str:
 
 
 _JOB_ROW_RE = re.compile(r"(?<!\w)(\d{1,3})\s+(G\d{10})\s+")
-_MERGED_NOTE_RE = re.compile(r"适应[^。\n；;]{0,30}(?:[。；;])?")
+_NOTE_KEYWORDS = (
+    "适应",
+    "高空作业",
+    "无高度近视",
+    "身体素质",
+    "色盲",
+    "色弱",
+    "视力",
+    "听力",
+    "野外",
+    "户外",
+    "夜班",
+    "倒班",
+    "艰苦",
+    "登高",
+)
+_MERGED_NOTE_RE = re.compile(
+    r"(?:"
+    + "|".join(re.escape(keyword) for keyword in _NOTE_KEYWORDS)
+    + r")[^。\n；;]{0,50}(?:\n[^。\n；;]{0,24})?(?:[。；;])?"
+)
 
 
 def _expand_merged_pdf_table_notes(text: str) -> str:
     """Add searchable rows for PDF table notes stored as merged cells."""
 
-    if not text or "适应" not in text:
-        return ""
-
     expanded: list[str] = []
     seen: set[tuple[str, str]] = set()
+
+    for row, note in _iter_expanded_pdf_table_note_rows(text):
+        key = (row["code"], note)
+        if key in seen:
+            continue
+        seen.add(key)
+        content = _normalize_ws(row["content"].replace(note, " "))
+        expanded.append(f'{row["no"]} {row["code"]} {content} | 备注：{note}')
+
+    if not expanded:
+        return ""
+    return "【PDF表格合并备注展开】\n" + "\n".join(expanded)
+
+
+def _iter_expanded_pdf_table_note_rows(text: str) -> Iterable[tuple[dict[str, str], str]]:
+    if not text or not any(keyword in text for keyword in _NOTE_KEYWORDS):
+        return
 
     for note_match in _MERGED_NOTE_RE.finditer(text):
         note = _normalize_ws(note_match.group(0)).rstrip("；;")
@@ -239,16 +280,42 @@ def _expand_merged_pdf_table_notes(text: str) -> str:
             continue
 
         for row in rows:
-            key = (row["code"], note)
-            if key in seen:
-                continue
-            seen.add(key)
-            content = _normalize_ws(row["content"].replace(note, " "))
-            expanded.append(f'{row["no"]} {row["code"]} {content} | 备注：{note}')
+            yield row, note
 
-    if not expanded:
+
+def _render_pdf_job_records(text: str) -> str:
+    """Add compact job-row records for layout-heavy PDF tables."""
+
+    rows = _extract_job_rows(text)
+    if not rows:
         return ""
-    return "【PDF表格合并备注展开】\n" + "\n".join(expanded)
+
+    note_map: dict[str, list[str]] = {}
+    for row, note in _iter_expanded_pdf_table_note_rows(text):
+        note_map.setdefault(row["code"], [])
+        if note not in note_map[row["code"]]:
+            note_map[row["code"]].append(note)
+
+    lines = ["【PDF岗位行结构化索引】"]
+    seen_codes: set[str] = set()
+    for row in rows:
+        code = row["code"]
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+
+        content = _clip_record_value(row["content"])
+        notes = "；".join(note_map.get(code, []))
+        parts = [
+            f'序号={row["no"]}',
+            f"岗位编号={code}",
+            f"内容={content}",
+        ]
+        if notes:
+            parts.append(f"备注={notes}")
+        lines.append("岗位记录: " + " | ".join(parts))
+
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def _subtotal_block_around(text: str, start: int, end: int) -> str:
@@ -331,10 +398,14 @@ def _extract_docx_container(container: Any, scope: str) -> list[ParsedElement]:
             table_idx += 1
             rows = _docx_table_rows(block)
             if rows:
+                table_text = _append_structured_records(
+                    _render_table(rows),
+                    _render_structured_table_records(rows, f"{scope} Table {table_idx}"),
+                )
                 elements.append(
                     ParsedElement(
                         "table",
-                        _render_table(rows),
+                        table_text,
                         {"scope": scope, "table_index": table_idx},
                     )
                 )
@@ -409,6 +480,82 @@ def _render_table(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def _render_structured_table_records(rows: list[list[str]], title: str) -> str:
+    """Render table rows as key/value records for exhaustive retrieval."""
+
+    if len(rows) < 2:
+        return ""
+
+    header_idx = _infer_header_row_index(rows)
+    headers = _normalized_headers(rows[header_idx])
+    if not headers:
+        return ""
+
+    lines = [f"【结构化表格记录：{title}】"]
+    record_no = 0
+    for row in rows[header_idx + 1:]:
+        cells = [_normalize_ws(_cell_to_str(cell)) for cell in row]
+        if not any(cells):
+            continue
+        width = max(len(headers), len(cells))
+        norm_headers = headers + [f"列{i + 1}" for i in range(len(headers), width)]
+        norm_cells = cells + [""] * (width - len(cells))
+        pairs = [
+            f"{norm_headers[i]}={_clip_record_value(norm_cells[i])}"
+            for i in range(width)
+            if norm_cells[i]
+        ]
+        if not pairs:
+            continue
+        record_no += 1
+        lines.append(f"记录{record_no}: " + " | ".join(pairs))
+
+    return "\n".join(lines) if record_no else ""
+
+
+def _infer_header_row_index(rows: list[list[str]]) -> int:
+    """Pick the most likely header row from the beginning of a table."""
+
+    best_idx = 0
+    best_score = -1
+    for idx, row in enumerate(rows[:10]):
+        cells = [_normalize_ws(_cell_to_str(cell)) for cell in row]
+        non_empty = [cell for cell in cells if cell]
+        if not non_empty:
+            continue
+        unique_count = len(set(non_empty))
+        duplicate_penalty = len(non_empty) - unique_count
+        score = unique_count * 2 + min(len(non_empty), 6) - duplicate_penalty * 3
+        if score > best_score:
+            best_idx = idx
+            best_score = score
+    return best_idx
+
+
+def _normalized_headers(header_row: list[str]) -> list[str]:
+    headers: list[str] = []
+    seen: dict[str, int] = {}
+    for idx, header in enumerate(header_row):
+        name = _normalize_ws(_cell_to_str(header)) or f"列{idx + 1}"
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name}_{seen[name]}"
+        headers.append(name)
+    return headers
+
+
+def _append_structured_records(text: str, records: str) -> str:
+    records = (records or "").strip()
+    if not records:
+        return text
+    return f"{text}\n\n{records}".strip() if text else records
+
+
+def _clip_record_value(text: str, limit: int = STRUCTURED_RECORD_VALUE_LIMIT) -> str:
+    text = _normalize_ws(text)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _escape_md_cell(value: Any) -> str:
     text = "" if value is None else str(value)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -430,7 +577,10 @@ def _parse_csv_document(raw: bytes) -> ParsedDocument:
             row = row[:TABLE_MAX_COLS]
         rows.append(row)
 
-    out = _render_table(rows)
+    out = _append_structured_records(
+        _render_table(rows),
+        _render_structured_table_records(rows, "CSV"),
+    )
     if truncated:
         warning = f"CSV 已截断，超出 {TABLE_MAX_ROWS} 行"
         warnings.append(warning)
@@ -476,7 +626,12 @@ def _parse_xlsx_document(raw: bytes) -> ParsedDocument:
                     continue
                 sheet_parts = [f"## Sheet: {ws_data.title}"]
                 if rows:
-                    sheet_parts.append(_render_table(rows))
+                    sheet_parts.append(
+                        _append_structured_records(
+                            _render_table(rows),
+                            _render_structured_table_records(rows, f"Sheet {ws_data.title}"),
+                        )
+                    )
                 if notes:
                     sheet_parts.append("\n".join(f"> 解析提示：{note}" for note in notes))
                     warnings.extend(f"{ws_data.title}: {note}" for note in notes)
@@ -627,7 +782,12 @@ def _parse_xls_document(raw: bytes) -> ParsedDocument:
                 continue
             sheet_parts = [f"## Sheet: {sh.name}"]
             if rows:
-                sheet_parts.append(_render_table(rows))
+                sheet_parts.append(
+                    _append_structured_records(
+                        _render_table(rows),
+                        _render_structured_table_records(rows, f"Sheet {sh.name}"),
+                    )
+                )
             if notes:
                 sheet_parts.append("\n".join(f"> 解析提示：{note}" for note in notes))
                 warnings.extend(f"{sh.name}: {note}" for note in notes)
