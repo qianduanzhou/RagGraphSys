@@ -83,7 +83,8 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [graphTasks, setGraphTasks] = useState<Record<string, GraphTaskInfo>>({});
-  const [mode, setMode] = useState<ChatMode>("rag");
+  // Source parsing is the safest default for conversations that have uploaded documents.
+  const [mode, setMode] = useState<ChatMode>("source");
   const [theme, setTheme] = useState<ThemeMode>(loadTheme);
   const [webSearchAvailable, setWebSearchAvailable] = useState<boolean>(true);
   const loadedRef = useRef<string | null>(null);
